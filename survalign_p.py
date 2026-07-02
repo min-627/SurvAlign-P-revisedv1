@@ -88,27 +88,28 @@ def istft_audio(spec, length, n_fft=256, hop_length=64):
 # 1. 실제 데이터셋 (화자 기준 격리 분할 & Resampler 캐싱)
 # =======================================================
 class RealLibriSpeechDataset(Dataset):
-    """LibriSpeech dev-clean 기반 실제 음성 데이터셋 (화자 격리 분할 탑재)."""
+    """LibriSpeech 기반 실제 음성 데이터셋 (화자 격리 분할 탑재)."""
 
-    def __init__(self, data_dir="./data/LibriSpeech/dev-clean", download=True, segment_len=32000, split="train"):
-        self.data_dir = data_dir
+    def __init__(self, dataset_name="dev-clean", download=True, segment_len=32000, split="train"):
+        self.dataset_name = dataset_name
+        self.data_dir = f"./data/LibriSpeech/{dataset_name}"
         self.segment_len = segment_len
         self.sample_rate = 16000
         self.split = split
         self.resamplers = {}  # Resampler 캐시로 매 샘플 생성 방지
 
-        if download and (not os.path.exists(data_dir) or not os.listdir(data_dir)):
+        if download and (not os.path.exists(self.data_dir) or not os.listdir(self.data_dir)):
             self._download_real_data()
 
         all_files = [
             os.path.join(dp, f)
-            for dp, dn, fn in os.walk(data_dir)
+            for dp, dn, fn in os.walk(self.data_dir)
             for f in fn
             if f.endswith((".flac", ".wav"))
         ]
         if len(all_files) == 0:
             raise FileNotFoundError(
-                f"실제 음성 데이터가 {data_dir}에 존재하지 않습니다. "
+                f"실제 음성 데이터가 {self.data_dir}에 존재하지 않습니다. "
                 "download=True로 설정하거나 데이터를 직접 배치하세요."
             )
 
@@ -140,12 +141,15 @@ class RealLibriSpeechDataset(Dataset):
         print(f"[DATASET] {split.upper()} 세트 화자 수: {len(target_spk)} / 파일 수: {len(self.files)}")
 
     def _download_real_data(self):
-        tar_path = "./data/dev-clean.tar.gz"
+        tar_name = f"{self.dataset_name}.tar.gz"
+        tar_path = f"./data/{tar_name}"
         os.makedirs("./data", exist_ok=True)
         
-        if not os.path.exists(tar_path) or os.path.getsize(tar_path) < 300000000:
-            print("[DOWNLOAD] LibriSpeech dev-clean 다운로드 중...")
-            url = "https://www.openslr.org/resources/12/dev-clean.tar.gz"
+        min_size = 300000000 if self.dataset_name == "dev-clean" else 6000000000
+        
+        if not os.path.exists(tar_path) or os.path.getsize(tar_path) < min_size:
+            print(f"[DOWNLOAD] LibriSpeech {self.dataset_name} 다운로드 중...")
+            url = f"https://www.openslr.org/resources/12/{tar_name}"
             urllib.request.urlretrieve(url, tar_path)
             
         print("[DOWNLOAD] 압축 해제 중...")
@@ -157,7 +161,7 @@ class RealLibriSpeechDataset(Dataset):
                 os.remove(tar_path)
             except Exception:
                 pass
-        print(f"[SUCCESS] 데이터셋 다운로드 및 압축 해제 완료.")
+        print(f"[SUCCESS] {self.dataset_name} 데이터셋 다운로드 및 압축 해제 완료.")
 
     def __len__(self):
         return len(self.files)
@@ -667,11 +671,11 @@ class SurvivalGate(nn.Module):
 # =======================================================
 class PresenceHead(nn.Module):
     """
-    디코딩된 logits의 Shannon Entropy, Margin(top1-top2), Max Probability를 입력받아
-    워터마크 유무를 이진 분류하는 판별기.
+    디코딩된 logits (64차원) 및 Shannon Entropy (4차원), Margin(top1-top2, 4차원), Max Probability (4차원)를
+    입력받아 워터마크 유무를 이진 분류하는 판별기 (총 76차원).
     """
 
-    def __init__(self, n_features=12):
+    def __init__(self, n_features=76):
         super().__init__()
         self.mlp = nn.Sequential(
             nn.Linear(n_features, 32),
@@ -691,6 +695,9 @@ class PresenceHead(nn.Module):
         Returns:
             prob: (B,) 워터마크 탐지 확률
         """
+        # Flat logits: (B, 64)
+        flat_logits = chunk_logits.reshape(chunk_logits.shape[0], -1)
+        
         # Decoding evidence 피처 추출 (Entropy & Margin & Max Probability)
         probs = F.softmax(chunk_logits, dim=-1)
         entropy = -torch.sum(probs * torch.log(probs + 1e-8), dim=-1)  # (B, 4)
@@ -699,7 +706,12 @@ class PresenceHead(nn.Module):
         margin = sorted_probs[:, :, 0] - sorted_probs[:, :, 1]         # (B, 4)
         max_prob = sorted_probs[:, :, 0]                              # (B, 4)
         
-        features = torch.cat([entropy, margin, max_prob], dim=-1)     # (B, 12)
+        # 12차원 또는 76차원 입력 피처 병합
+        if self.mlp[0].in_features == 12:
+            features = torch.cat([entropy, margin, max_prob], dim=-1) # (B, 12)
+        else:
+            features = torch.cat([flat_logits, entropy, margin, max_prob], dim=-1) # (B, 76)
+            
         return self.mlp(features).squeeze(-1)
 
 
@@ -770,7 +782,7 @@ def compute_survival_routing_loss(r_gated_complex, survival_map, masking_map, va
 # =======================================================
 # 8. 학습 파이프라인
 # =======================================================
-def run_training():
+def run_training(args):
     print("=" * 60)
     print("[START] SurvAlign-P URP 2차 수정 훈련 파이프라인 시작")
     print("=" * 60)
@@ -783,14 +795,14 @@ def run_training():
     alignmark = AlignMarkManager(device)
 
     # ---- 데이터 로드 (화자 격리 분할 적용) ----
-    print("\n[초기화] 데이터셋 로드...")
-    train_dataset = RealLibriSpeechDataset(download=True, split="train")
-    calib_dataset = RealLibriSpeechDataset(download=False, split="calib")
-    test_dataset = RealLibriSpeechDataset(download=False, split="test")
+    print(f"\n[초기화] 데이터셋 ({args.dataset_name}) 로드...")
+    train_dataset = RealLibriSpeechDataset(dataset_name=args.dataset_name, download=True, split="train")
+    calib_dataset = RealLibriSpeechDataset(dataset_name=args.dataset_name, download=False, split="calib")
+    test_dataset = RealLibriSpeechDataset(dataset_name=args.dataset_name, download=False, split="test")
 
-    train_loader = DataLoader(train_dataset, batch_size=4, shuffle=True, num_workers=0)
-    calib_loader = DataLoader(calib_dataset, batch_size=4, shuffle=False, num_workers=0)
-    test_loader = DataLoader(test_dataset, batch_size=4, shuffle=False, num_workers=0)
+    train_loader = DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True, num_workers=0)
+    calib_loader = DataLoader(calib_dataset, batch_size=args.batch_size, shuffle=False, num_workers=0)
+    test_loader = DataLoader(test_dataset, batch_size=args.batch_size, shuffle=False, num_workers=0)
 
     distorter = DifferentiableDistortion(vae=alignmark.vae).to(device)
 
@@ -802,10 +814,26 @@ def run_training():
     # ---- 모델 선언 ----
     # 6채널 입력 스택: wav_mag_normalized, r0_mag_normalized, s_map_smoothed, p_map, vad_prior, res_prior
     gate = SurvivalGate(in_channels=6, hidden_dim=32).to(device)
-    presence = PresenceHead(n_features=12).to(device)
+    presence = PresenceHead(n_features=76).to(device)
 
-    opt_gate = optim.AdamW(gate.parameters(), lr=1e-4)
-    opt_presence = optim.AdamW(presence.parameters(), lr=5e-4)
+    opt_gate = optim.AdamW(gate.parameters(), lr=args.lr_gate)
+    opt_presence = optim.AdamW(presence.parameters(), lr=args.lr_presence)
+
+    # positive/negative 왜곡 선택적 적용 헬퍼 (dist_mode에 따라 6가지 중 선택)
+    def apply_dist_by_mode(w, mode, seed):
+        w_2d = w.squeeze(1)
+        if mode == 0:
+            return distorter(w_2d, "noise", snr_db=20.0, seed=seed).unsqueeze(1)
+        elif mode == 1:
+            return distorter(w_2d, "lowpass", cutoff_hz=4000).unsqueeze(1)
+        elif mode == 2:
+            return distorter(w_2d, "bandpass", low_hz=300, high_hz=3400).unsqueeze(1)
+        elif mode == 3:
+            return distorter(w_2d, "resample", down_rate=2).unsqueeze(1)
+        elif mode == 4:
+            return distorter(w_2d, "reconstruct", n_q=6).unsqueeze(1)
+        else:  # mode == 5
+            return distorter(w_2d, "mp3", cutoff_ratio=0.7, seed=seed).unsqueeze(1)
 
     # ================================================================
     # STAGE 1: Survival Gate 학습 (실제 디코더 직접 역전파)
@@ -817,7 +845,7 @@ def run_training():
     print("=" * 60)
 
     gate.train()
-    n_gate_steps = 30  # 예비 시뮬레이션용 스텝
+    n_gate_steps = args.n_gate_steps
 
     for step, (wav, msg) in enumerate(train_loader):
         if step >= n_gate_steps:
@@ -877,21 +905,10 @@ def run_training():
         # g. 동일한 공격 적용 (Stochastic Attack 시드 일관성)
         dist_mode = step % 6
         attack_seed = 42 + step
-        if dist_mode == 0:
-            wav_distorted = distorter(wav_final, "noise", snr_db=15.0, seed=attack_seed)
-        elif dist_mode == 1:
-            wav_distorted = distorter(wav_final, "lowpass", cutoff_hz=4000)
-        elif dist_mode == 2:
-            wav_distorted = distorter(wav_final, "bandpass", low_hz=300, high_hz=3400)
-        elif dist_mode == 3:
-            wav_distorted = distorter(wav_final, "resample", down_rate=2)
-        elif dist_mode == 4:
-            wav_distorted = distorter(wav_final, "reconstruct", n_q=6)
-        else:
-            wav_distorted = distorter(wav_final, "mp3", cutoff_ratio=0.7, seed=attack_seed)
+        wav_distorted = apply_dist_by_mode(wav_final.unsqueeze(1), dist_mode, attack_seed)
 
         # h. 디코더를 직접 통과하여 BER Loss 계산 (이미 미분 가능!)
-        _, chunk_logits = alignmark.decode_logits_with_grad(wav_distorted.unsqueeze(1))
+        _, chunk_logits = alignmark.decode_logits_with_grad(wav_distorted)
 
         loss_rob = compute_chunk_ce_loss(chunk_logits, msg)
 
@@ -933,7 +950,7 @@ def run_training():
 
     presence.train()
     bce = nn.BCELoss()
-    n_presence_steps = 20
+    n_presence_steps = args.n_presence_steps
 
     for step, (wav, msg) in enumerate(train_loader):
         if step >= n_presence_steps:
@@ -942,7 +959,7 @@ def run_training():
         wav, msg = wav.to(device), msg.to(device)
         opt_presence.zero_grad()
 
-        # 학습 시 정직하게 distorted positive/negative를 인풋으로 주입해 노이즈 오탐 방지
+        # 학습 시 정직하게 distorted positive/negative를 인풋으로 주입해 노이즈 오탐 방지 (6종 왜곡 순환 주입)
         dist_mode = step % 6
         attack_seed = 100 + step
 
@@ -972,12 +989,15 @@ def run_training():
             scale_factor = torch.minimum(torch.tensor(1.0, device=r_gated.device), norm_r0 / norm_gated)
             wav_gated_final = (wav_2d + r_gated * scale_factor).unsqueeze(1)
 
-            # Positive 왜곡 적용
-            pos_dist = distorter(wav_wm_base.squeeze(1), "noise", snr_db=20.0, seed=attack_seed).unsqueeze(1)
+            # Positive 왜곡 적용 (Gated와 Base를 고르게 주입)
+            if step % 2 == 0:
+                pos_dist = apply_dist_by_mode(wav_gated_final, dist_mode, attack_seed)
+            else:
+                pos_dist = apply_dist_by_mode(wav_wm_base, dist_mode, attack_seed)
             _, pos_chunk_logits, _ = alignmark.decode(pos_dist)
 
             # Negative 왜곡 적용
-            neg_dist = distorter(wav.squeeze(1), "noise", snr_db=20.0, seed=attack_seed).unsqueeze(1)
+            neg_dist = apply_dist_by_mode(wav, dist_mode, attack_seed)
             _, neg_chunk_logits, _ = alignmark.decode(neg_dist)
 
         inputs = torch.cat([pos_chunk_logits, neg_chunk_logits], dim=0) # (2B, 4, 16)
@@ -1002,7 +1022,7 @@ def run_training():
     # ================================================================
     print("=" * 60)
     print("[Stage 2.1] Presence Threshold Calibration (Calibration 화자 세트)")
-    print("  목적: 명목상 FPR <= 1% 수준을 달성하는 임계값(tau_p) 결정")
+    print("  목적: 명목상 FPR <= 1% 수준을 달성하는 임계값(tau_p) 결정 (6종 왜곡 대상)")
     print("=" * 60)
 
     presence.eval()
@@ -1011,8 +1031,9 @@ def run_training():
     with torch.no_grad():
         for step, (wav, msg) in enumerate(calib_loader):
             wav = wav.to(device)
-            # Calibration 화자들의 오디오 왜곡 적용 (Negative)
-            neg_dist = distorter(wav.squeeze(1), "noise", snr_db=20.0, seed=500+step).unsqueeze(1)
+            # Calibration 화자들의 다양한 오디오 왜곡 적용 (Negative)
+            dist_mode = step % 6
+            neg_dist = apply_dist_by_mode(wav, dist_mode, 500+step)
             _, neg_chunk_logits, _ = alignmark.decode(neg_dist)
             neg_probs = presence(neg_chunk_logits)
             calib_negative_scores.extend(neg_probs.cpu().numpy().tolist())
@@ -1021,6 +1042,24 @@ def run_training():
     tau_p = np.quantile(calib_negative_scores, 0.99)
     print(f"[CALIBRATION] Calibration Negative Scores 개수: {len(calib_negative_scores)}")
     print(f"[CALIBRATION] 결정된 Presence 임계값 (tau_p at nominal FPR<=1%): {tau_p:.4f}")
+
+    # ---- 체크포인트 저장 ----
+    print("\n[CHECKPOINT] 모델 가중치 및 임계값(tau_p) 저장 중...")
+    gate_ckpt_path = "./gate_checkpoint.pth"
+    presence_ckpt_path = "./presence_checkpoint.pth"
+    
+    torch.save({
+        "model_state_dict": gate.state_dict(),
+        "optimizer_state_dict": opt_gate.state_dict(),
+    }, gate_ckpt_path)
+    print(f"  - Survival Gate 가중치 저장 완료: {gate_ckpt_path}")
+    
+    torch.save({
+        "model_state_dict": presence.state_dict(),
+        "optimizer_state_dict": opt_presence.state_dict(),
+        "tau_p": float(tau_p),
+    }, presence_ckpt_path)
+    print(f"  - Presence Head 가중치 및 임계값 저장 완료: {presence_ckpt_path}")
 
     # ================================================================
     # STAGE 3: 종합 평가 (격리된 test 화자 세트를 사용해 1:1 성능 대조)
@@ -1048,7 +1087,7 @@ def run_training():
     stoi_base_scores, stoi_gated_scores = [], []
     sdr_base_scores, sdr_gated_scores = [], []
     
-    n_eval_steps = 10  # 예비 평가용 샘플 수
+    n_eval_steps = args.n_eval_steps
 
     with torch.no_grad():
         for step, (wav, msg) in enumerate(test_loader):
@@ -1109,12 +1148,13 @@ def run_training():
                 results[dist_name]["gated_ber"].append(ber_gated)
 
             # Test 화자 Presence 검증용 positive/negative 왜곡 수집
-            pos_dist_test = distorter(wav_gated.squeeze(1), "noise", snr_db=20.0, seed=attack_seed).unsqueeze(1)
+            dist_mode_test = step % 6
+            pos_dist_test = apply_dist_by_mode(wav_gated, dist_mode_test, attack_seed)
             _, pos_chunk_logits, _ = alignmark.decode(pos_dist_test)
             p_pos = presence(pos_chunk_logits)
             test_positive_scores.extend(p_pos.cpu().numpy().tolist())
 
-            neg_dist_test = distorter(wav.squeeze(1), "noise", snr_db=20.0, seed=attack_seed).unsqueeze(1)
+            neg_dist_test = apply_dist_by_mode(wav, dist_mode_test, attack_seed)
             _, neg_chunk_logits, _ = alignmark.decode(neg_dist_test)
             p_neg = presence(neg_chunk_logits)
             test_negative_scores.extend(p_neg.cpu().numpy().tolist())
@@ -1145,20 +1185,32 @@ def run_training():
                 sdr_base_scores.append(compute_si_sdr(ref[np.newaxis, :], base_deg[np.newaxis, :]))
                 sdr_gated_scores.append(compute_si_sdr(ref[np.newaxis, :], gated_deg[np.newaxis, :]))
 
+    # 통계 도출 함수 (평균 ± 95% 신뢰구간)
+    def compute_stats(values):
+        if not values:
+            return 0.0, 0.0
+        mean = np.mean(values)
+        std = np.std(values, ddof=1) if len(values) > 1 else 0.0
+        se = std / np.sqrt(len(values))
+        ci = 1.96 * se  # 95% Confidence Interval
+        return mean, ci
+
     # ---- 결과 출력 및 정리 ----
     print("\n" + "=" * 60)
     print("[REPORT] 종합 리포트")
     print("=" * 60)
-    print(f"| {'왜곡 조건 (Distortion)':<35} | {'기본형 (AlignMark)':<20} | {'제안형 (SurvAlign-P)':<20} | {'개선도':<8} |")
-    print(f"|{'-'*37}|{'-'*22}|{'-'*22}|{'-'*10}|")
+    print(f"| {'왜곡 조건 (Distortion)':<35} | {'기본형 (AlignMark)':<25} | {'제안형 (SurvAlign-P)':<25} | {'개선도':<8} |")
+    print(f"|{'-'*37}|{'-'*27}|{'-'*27}|{'-'*10}|")
     
     for dist_name in results.keys():
-        b_ber = np.mean(results[dist_name]["base_ber"])
-        g_ber = np.mean(results[dist_name]["gated_ber"])
-        diff = b_ber - g_ber
-        print(f"| {dist_name:<35} | {b_ber:<20.4f} | {g_ber:<20.4f} | {diff:+.4f} |")
+        b_mean, b_ci = compute_stats(results[dist_name]["base_ber"])
+        g_mean, g_ci = compute_stats(results[dist_name]["gated_ber"])
+        diff = b_mean - g_mean
+        b_str = f"{b_mean:.4f} (±{b_ci:.4f})"
+        g_str = f"{g_mean:.4f} (±{g_ci:.4f})"
+        print(f"| {dist_name:<35} | {b_str:<25} | {g_str:<25} | {diff:+.4f} |")
         
-    print(f"|{'-'*37}|{'-'*22}|{'-'*22}|{'-'*10}|")
+    print(f"|{'-'*37}|{'-'*27}|{'-'*27}|{'-'*10}|")
 
     # AUC 및 FPR/TPR 탐지력 검증
     test_positive_scores = np.array(test_positive_scores)
@@ -1174,15 +1226,41 @@ def run_training():
         print(f"[INFO] Test FPR (at Nominal 1% Calibrated Threshold): {actual_test_fpr:.2%}")
         print(f"[INFO] Test TPR (at Nominal 1% Calibrated Threshold): {actual_test_tpr:.2%}")
 
-    print("\n[INFO] 1:1 오디오 품질 비교 지표:")
-    print(f"  - PESQ WB | 기본형: {np.mean(pesq_base_scores):.3f} vs 제안형: {np.mean(pesq_gated_scores):.3f}")
-    print(f"  - STOI    | 기본형: {np.mean(stoi_base_scores):.3f} vs 제안형: {np.mean(stoi_gated_scores):.3f}")
-    print(f"  - SI-SDR   | 기본형: {np.mean(sdr_base_scores):.2f} dB vs 제안형: {np.mean(sdr_gated_scores):.2f} dB")
+    print("\n[INFO] 1:1 오디오 품질 비교 지표 (평균 ± 95% 신뢰구간):")
+    pesq_b_m, pesq_b_c = compute_stats(pesq_base_scores)
+    pesq_g_m, pesq_g_c = compute_stats(pesq_gated_scores)
+    stoi_b_m, stoi_b_c = compute_stats(stoi_base_scores)
+    stoi_g_m, stoi_g_c = compute_stats(stoi_gated_scores)
+    sdr_b_m, sdr_b_c = compute_stats(sdr_base_scores)
+    sdr_g_m, sdr_g_c = compute_stats(sdr_gated_scores)
 
-    # L2 에너지 보존율 재검증
+    print(f"  - PESQ WB | 기본형: {pesq_b_m:.3f} (±{pesq_b_c:.3f}) vs 제안형: {pesq_g_m:.3f} (±{pesq_g_c:.3f})")
+    print(f"  - STOI    | 기본형: {stoi_b_m:.3f} (±{stoi_b_c:.3f}) vs 제안형: {stoi_g_m:.3f} (±{stoi_g_c:.3f})")
+    print(f"  - SI-SDR   | 기본형: {sdr_b_m:.2f} (±{sdr_b_c:.2f}) dB vs 제안형: {sdr_g_m:.2f} (±{sdr_g_c:.2f}) dB")
+
     print("\n[SUCCESS] SurvAlign-P 전체 시뮬레이션 완료!")
 
 
 if __name__ == "__main__":
-    run_training()
+    import argparse
+    parser = argparse.ArgumentParser(description="SurvAlign-P Research Training and Evaluation Engine")
+    parser.add_argument("--dataset_name", type=str, default="dev-clean", choices=["dev-clean", "train-clean-100"],
+                        help="Name of LibriSpeech dataset split")
+    parser.add_argument("--n_gate_steps", type=int, default=1000, help="Steps for Survival Gate training")
+    parser.add_argument("--n_presence_steps", type=int, default=500, help="Steps for Presence Head training")
+    parser.add_argument("--n_eval_steps", type=int, default=100, help="Steps for final evaluation")
+    parser.add_argument("--sanity_check", action="store_true", help="Run a quick end-to-end sanity check")
+    parser.add_argument("--batch_size", type=int, default=4, help="Batch size for training/evaluation")
+    parser.add_argument("--lr_gate", type=float, default=1e-4, help="Learning rate for Survival Gate")
+    parser.add_argument("--lr_presence", type=float, default=5e-4, help="Learning rate for Presence Head")
+    
+    args = parser.parse_args()
+    
+    if args.sanity_check:
+        args.n_gate_steps = 5
+        args.n_presence_steps = 5
+        args.n_eval_steps = 2
+        print("[SANITY CHECK] Sanity check flag detected: setting n_gate_steps=5, n_presence_steps=5, n_eval_steps=2.")
+
+    run_training(args)
 

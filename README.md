@@ -65,16 +65,46 @@ pip install pesq pystoi scikit-learn soundfile torchaudio
 ## 🏃 실행 및 평가 (Running & Evaluation)
 
 ### 데이터셋
-학습용 LibriSpeech dev-clean 데이터셋은 **코드 실행 시 자동으로 웹에서 다운로드 및 압축 해제가 진행**됩니다. (약 338MB 용량 필요)  
+학습용 LibriSpeech 데이터셋은 **코드 실행 시 자동으로 웹에서 다운로드 및 압축 해제가 진행**됩니다.
+- **dev-clean**: 약 338MB (기본값)
+- **train-clean-100**: 약 6.3GB
+
 코드 내부에서 Speaker ID를 격리하여 자동으로 학습(80%), 보정(10%), 최종 테스트(10%) 화자 풀로 분할됩니다.
 
-### 실행 명령
+### 실행 명령 및 옵션
+`survalign_p.py`는 다음과 같은 다양한 명령줄 실행 인자를 지원합니다:
+
 ```bash
+# 기본 설정으로 학습 진행 (n_gate_steps=1000, n_presence_steps=500, dev-clean 사용)
 python survalign_p.py
+
+# 3분 이내로 전체 코드 동작을 점검하기 위한 초고속 Sanity Check 실행
+python survalign_p.py --sanity_check
+
+# 대용량 train-clean-100 데이터셋으로 대규모 학습 진행
+python survalign_p.py --dataset_name train-clean-100 --n_gate_steps 2000 --n_presence_steps 1000
+
+# 하이퍼파라미터 조절 예시
+python survalign_p.py --batch_size 8 --lr_gate 5e-5 --lr_presence 1e-4
 ```
 
+### 실행 인자 상세 설명
+- `--dataset_name`: 다운로드 및 학습에 사용할 LibriSpeech 데이터셋 이름 (`dev-clean` 또는 `train-clean-100`).
+- `--n_gate_steps`: Survival Gate 학습용 최대 스텝 수 (기본값: 1000).
+- `--n_presence_steps`: Presence Head 학습용 최대 스텝 수 (기본값: 500).
+- `--n_eval_steps`: 최종 평가 시 평가할 오디오 샘플 수 (기본값: 100).
+- `--sanity_check`: 활성화 시 즉시 학습 스텝을 초소형화(5스텝/5스텝/2샘플)하여 테스트 작동.
+- `--batch_size`: 데이터 로더 배치 크기 (기본값: 4).
+- `--lr_gate`: Survival Gate 옵티마이저 학습률 (기본값: 1e-4).
+- `--lr_presence`: Presence Head 옵티마이저 학습률 (기본값: 5e-4).
+
+### 모델 저장 및 체크포인트
+학습이 정상 완료되면 현재 작업 디렉토리에 다음 파일들이 자동으로 생성 및 저장됩니다:
+- `gate_checkpoint.pth`: 학습이 완료된 Survival Gate 가중치.
+- `presence_checkpoint.pth`: Presence Head 가중치 및 명목 FPR <= 1% 기준의 탐지 임계값(`tau_p`) 정보.
+
 ### 출력 리포트
-코드가 완료되면 다음과 같은 종합 지표가 출력됩니다:
+코드가 완료되면 다음과 같은 종합 지표가 **평균 및 95% 신뢰구간 (±95% CI)**을 포함하여 표 형태로 출력됩니다:
 - **BER (Bit Error Rate)**: AWGN, Lowpass, Bandpass, Resample, RVQ Reconstruct, MP3 Proxy 조건 하에서 기본형 대비 개선도(pp 단위) 리포트.
 - **Audio Quality**: PESQ WB, STOI, SI-SDR의 1:1 오디오 쌍 비교 평가.
 - **Open-set Detection**: Calibrated FPR 임계치에서의 Test TPR 및 탐지 AUROC.
