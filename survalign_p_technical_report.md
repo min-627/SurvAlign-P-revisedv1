@@ -1,7 +1,7 @@
 # SurvAlign-P 기술 분석 및 구조 보고서 (Technical Report)
 
 > [!NOTE]
-> 본 문서는 URP 연구 과제로 수행된 **SurvAlign-P 모델의 심층적인 구조적 특징, 수학적 논리, 아키텍처 다이어그램 및 사용법**을 총망라한 Technical Report입니다. 논문 작성 시 방법론(Methodology) 및 아키텍처 설계(Architecture Design) 섹션의 기초 자료로 바로 복사하여 활용할 수 있습니다.
+> 본 문서는 URP 연구 과제로 수행된 **SurvAlign-P 모델의 심층적인 구조적 특징, 수학적 논리, 아키텍처 다이어그램 및 사용법**을 총망라한 Technical Report입니다. 
 
 ---
 
