@@ -370,7 +370,10 @@ class UnifiedSpeechDataset(Dataset):
         if download and not os.path.exists(lj_dir):
             try: torchaudio.datasets.LJSPEECH(root="./data/LJSpeech", download=True)
             except: pass
-        lj_files = [os.path.join(lj_dir, f) for f in os.listdir(lj_dir) if f.endswith((".wav", ".flac"))]
+        if os.path.exists(lj_dir):
+            lj_files = [os.path.join(lj_dir, f) for f in os.listdir(lj_dir) if f.endswith((".wav", ".flac"))]
+        else:
+            lj_files = []
 
         def get_split(files):
             if len(files) == 0: return []
@@ -387,6 +390,11 @@ class UnifiedSpeechDataset(Dataset):
             else: return [files[i] for i in train_idx]
 
         self.files = get_split(lib_files) + get_split(vctk_files) + get_split(lj_files)
+        if len(self.files) == 0:
+            raise FileNotFoundError(
+                "No audio files were found for combined dataset. "
+                "Place LibriSpeech, VCTK, or LJSpeech data under ./data or enable downloads."
+            )
         print(f"[DATASET] COMBINED {self.split.upper()} 세트 (원 논문 세팅) 구성 완료. 총 파일 수: {len(self.files)}")
 
     def _split_by_speaker(self, file_spk_pairs):
@@ -869,6 +877,19 @@ class AlignMarkManager:
             alignmark_dir, "speechtokenizer", "pretrained_model",
             "SpeechTokenizer.pt"
         )
+        weight_path = os.path.join(alignmark_dir, "weight.pth")
+        missing_assets = [
+            path for path in (config_path, ckpt_path, weight_path)
+            if not os.path.exists(path)
+        ]
+        if missing_assets:
+            missing_list = "\n - ".join(missing_assets)
+            raise FileNotFoundError(
+                "Missing required AlignMark assets:\n"
+                f" - {missing_list}\n"
+                "Place the pretrained files at the documented paths before running experiments."
+            )
+
         self.vae = SpeechTokenizer.load_from_checkpoint(config_path, ckpt_path).to(device)
         self.vae.eval()
         for p in self.vae.parameters():
@@ -879,13 +900,11 @@ class AlignMarkManager:
             n_fft=256, hop_length=64, win_length=256, hidden_dim=64, nbits=16
         ).to(device)
 
-        weight_path = os.path.join(alignmark_dir, "weight.pth")
-        if os.path.exists(weight_path):
-            checkpoint = torch.load(weight_path, map_location=device, weights_only=True)
-            wm_dict = {k.replace("module.", ""): v for k, v in checkpoint["model_state_dict"].items()}
-            self.wm_model.load_state_dict(wm_dict, strict=True)
-            fusion_dict = {k.replace("module.", ""): v for k, v in checkpoint["fusion_state_dict"].items()}
-            self.fusion.load_state_dict(fusion_dict, strict=True)
+        checkpoint = torch.load(weight_path, map_location=device, weights_only=True)
+        wm_dict = {k.replace("module.", ""): v for k, v in checkpoint["model_state_dict"].items()}
+        self.wm_model.load_state_dict(wm_dict, strict=True)
+        fusion_dict = {k.replace("module.", ""): v for k, v in checkpoint["fusion_state_dict"].items()}
+        self.fusion.load_state_dict(fusion_dict, strict=True)
 
         self.wm_model.eval()
         self.fusion.eval()
@@ -1041,28 +1060,36 @@ def compute_ber(pred_bits, target_bits):
 
 
 def compute_si_sdr(reference, estimated, eps=1e-8):
-    """Scale-Invariant Signal-to-Distortion Ratio 계산."""
-    # reference, estimated: (B, T) or numpy arrays
+    """Compute Scale-Invariant Signal-to-Distortion Ratio."""
     if isinstance(reference, np.ndarray):
         reference = torch.from_numpy(reference)
     if isinstance(estimated, np.ndarray):
         estimated = torch.from_numpy(estimated)
-        
-    reference = reference.view(reference.shape[0], -1)
-    estimated = estimated.view(estimated.shape[0], -1)
-    
+
+    reference = reference.float()
+    estimated = estimated.float()
+    if reference.dim() == 1:
+        reference = reference.unsqueeze(0)
+    elif reference.dim() > 2:
+        reference = reference.reshape(reference.shape[0], -1)
+    if estimated.dim() == 1:
+        estimated = estimated.unsqueeze(0)
+    elif estimated.dim() > 2:
+        estimated = estimated.reshape(estimated.shape[0], -1)
+    if reference.shape != estimated.shape:
+        raise ValueError(f"SI-SDR inputs must have matching shapes, got {reference.shape} and {estimated.shape}")
+
     dot_product = torch.sum(reference * estimated, dim=-1, keepdim=True)
     ref_energy = torch.sum(reference ** 2, dim=-1, keepdim=True) + eps
-    
+
     scaled_ref = (dot_product / ref_energy) * reference
     noise = estimated - scaled_ref
-    
+
     scaled_ref_energy = torch.sum(scaled_ref ** 2, dim=-1, keepdim=True)
     noise_energy = torch.sum(noise ** 2, dim=-1, keepdim=True) + eps
-    
+
     sdr = 10 * torch.log10(scaled_ref_energy / noise_energy + eps)
     return torch.mean(sdr).item()
-
 
 def compute_total_variation_loss(gate_scale):
     """게이트 맵의 인접 격자(시간/주파수) 간의 불연속성을 직접 제어하여 급격한 변이를 억제."""
@@ -1551,8 +1578,8 @@ if __name__ == "__main__":
     import argparse
     parser = argparse.ArgumentParser(description="SurvAlign-P Research Training and Evaluation Engine")
     parser.add_argument("--dataset_type", type=str, default="librispeech",
-                        choices=["librispeech", "vctk", "ljspeech"],
-                        help="Dataset type to use (librispeech, vctk, ljspeech)")
+                        choices=["librispeech", "vctk", "ljspeech", "combined"],
+                        help="Dataset type to use (librispeech, vctk, ljspeech, combined)")
     parser.add_argument("--dataset_name", type=str, default="dev-clean",
                         help="LibriSpeech subset name (e.g., dev-clean, train-clean-100)")
     parser.add_argument("--n_gate_steps", type=int, default=1000, help="Steps for Survival Gate training")

@@ -59,11 +59,21 @@ def get_top_k_mask(map_tensor, top_ratio=0.2):
         masks.append((map_tensor[b] >= threshold).float())
     return torch.stack(masks, dim=0).to(map_tensor.device)
 
+
+def compute_valid_correlations(s_flat, d_flat, eps=1e-12):
+    if np.std(s_flat) < eps or np.std(d_flat) < eps:
+        return None, None
+    r, _ = pearsonr(s_flat, d_flat)
+    rho, _ = spearmanr(s_flat, d_flat)
+    if not (np.isfinite(r) and np.isfinite(rho)):
+        return None, None
+    return r, rho
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--dataset_type", type=str, default="librispeech",
-                        choices=["librispeech", "vctk", "ljspeech"],
-                        help="사용할 데이터셋 유형 (librispeech, vctk, ljspeech)")
+                        choices=["librispeech", "vctk", "ljspeech", "combined"],
+                        help="사용할 데이터셋 유형 (librispeech, vctk, ljspeech, combined)")
     parser.add_argument("--dataset_name", type=str, default="train-clean-100", help="LibriSpeech 서브셋 (예: train-clean-100)")
     parser.add_argument("--split", type=str, default="test", help="검증에 사용할 분할 (test 또는 calib)")
     parser.add_argument("--batch_size", type=int, default=4)
@@ -126,10 +136,10 @@ def main():
             s_flat = survival_map[b].cpu().numpy().flatten()
             d_flat = decoder_map[b].cpu().detach().numpy().flatten()
             
-            r, _ = pearsonr(s_flat, d_flat)
-            rho, _ = spearmanr(s_flat, d_flat)
-            all_pearson.append(r)
-            all_spearman.append(rho)
+            r, rho = compute_valid_correlations(s_flat, d_flat)
+            if r is not None:
+                all_pearson.append(r)
+                all_spearman.append(rho)
             
             s_top20_mask = s_flat >= np.percentile(s_flat, 80)
             d_top20_mask = d_flat >= np.percentile(d_flat, 80)
@@ -213,6 +223,8 @@ def main():
     print("="*60)
     
     print(f"[1] Correlation Metrics (N={len(all_pearson)})")
+    if len(all_pearson) == 0:
+        raise RuntimeError("No valid correlation samples were produced. Check maps for constant or invalid values.")
     r_mean, r_std = np.mean(all_pearson), np.std(all_pearson)
     rho_mean, rho_std = np.mean(all_spearman), np.std(all_spearman)
     iou_mean, iou_std = np.mean(all_iou), np.std(all_iou)
@@ -228,11 +240,16 @@ def main():
         acc = 1.0 - mean_ber
         print(f"  {cond_name:<30}| {mean_ber:.4f}    | {acc:.4f}")
         
-    t_stat, p_val = ttest_rel(masking_results["High-Survival (Top 20%)"], masking_results["Low-Survival (Bottom 20%)"])
+    high_survival_bers = masking_results["High-Survival (Top 20%)"]
+    low_survival_bers = masking_results["Low-Survival (Bottom 20%)"]
+    if len(high_survival_bers) >= 2 and len(high_survival_bers) == len(low_survival_bers):
+        t_stat, p_val = ttest_rel(high_survival_bers, low_survival_bers)
+    else:
+        t_stat, p_val = np.nan, np.nan
     print(f"\n[3] Branching Decision (Multi-stage Logic)")
     print(f" - High vs Low Survival BER p-value: {p_val:.4e} (t-stat: {t_stat:.4f})")
     
-    causality_proven = (p_val < 0.05 and t_stat < 0)
+    causality_proven = (np.isfinite(p_val) and np.isfinite(t_stat) and p_val < 0.05 and t_stat < 0)
     
     if r_mean > 0.5:
         print(" - Conclusion: STRONG CORRELATION (r > 0.5). Survival Map matches Decoder needs.")

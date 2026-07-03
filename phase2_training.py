@@ -68,6 +68,8 @@ class SimplifiedSurvivalGate(nn.Module):
 
 
 def train_gate(args, device, alignmark, distorter, dataset_train, dataset_val):
+    if len(dataset_train) == 0:
+        raise ValueError("Training dataset is empty. Check dataset path, split, and download settings.")
     print(f"\n[TRAIN] Starting Full Gate Training in mode: {args.mode}")
     print(f"[INFO] Dataset: {args.dataset_type}, Epochs: {args.epochs}, Batch Size: {args.batch_size}")
     
@@ -76,6 +78,8 @@ def train_gate(args, device, alignmark, distorter, dataset_train, dataset_val):
     
     # 본학습용 대용량 DataLoader 설정 (num_workers 지정)
     dataloader = DataLoader(dataset_train, batch_size=args.batch_size, shuffle=True, drop_last=True, num_workers=0)
+    if len(dataloader) == 0:
+        raise ValueError("Training DataLoader is empty. Reduce --batch_size or add more training samples.")
     
     dist_types = ["noise", "lowpass", "bandpass", "resample", "reconstruct", "mp3", "facodec_proxy"]
     os.makedirs("./checkpoints", exist_ok=True)
@@ -161,10 +165,14 @@ def train_gate(args, device, alignmark, distorter, dataset_train, dataset_val):
             print(f"[SAVE] New best model saved to {ckpt_path}")
             
     # 평가를 위해 최고 성능 모델 로드
-    gate.load_state_dict(torch.load(ckpt_path))
+    gate.load_state_dict(torch.load(ckpt_path, map_location=device, weights_only=True))
     return gate
 
 def evaluate(args, device, alignmark, distorter, dataset_test, gate=None):
+    if args.mode not in ["baseline", "uniform"] and gate is None:
+        raise ValueError(f"Mode {args.mode} requires a trained or loaded gate.")
+    if len(dataset_test) == 0:
+        raise ValueError("Test dataset is empty. Check dataset path, split, and download settings.")
     print(f"\n[EVAL] Starting Full Evaluation in mode: {args.mode} on dataset: {args.dataset_type}")
     dataloader = DataLoader(dataset_test, batch_size=args.batch_size, shuffle=False, num_workers=0)
     
@@ -227,7 +235,7 @@ def evaluate(args, device, alignmark, distorter, dataset_test, gate=None):
                 f_np = wav_final[b].squeeze().cpu().numpy()
                 try:
                     metrics["PESQ"].append(pesq(16000, c_np, f_np, 'wb'))
-                except:
+                except Exception:
                     metrics["PESQ"].append(1.0)
                 metrics["STOI"].append(compute_stoi(c_np, f_np, 16000, extended=False))
                 metrics["SI_SDR"].append(compute_si_sdr(c_np, f_np))
@@ -291,8 +299,8 @@ def main():
     parser.add_argument("--mode", type=str, required=True, 
                         choices=["baseline", "uniform", "random_gate", "energy_gate", "proposed_gate"])
     parser.add_argument("--dataset_type", type=str, default="librispeech",
-                        choices=["librispeech", "vctk", "ljspeech"],
-                        help="사용할 데이터셋 유형 (librispeech, vctk, ljspeech)")
+                        choices=["librispeech", "vctk", "ljspeech", "combined"],
+                        help="사용할 데이터셋 유형 (librispeech, vctk, ljspeech, combined)")
     parser.add_argument("--dataset_name", type=str, default="train-clean-100", 
                         help="LibriSpeech 서브셋 이름 (예: train-clean-100, dev-clean)")
     parser.add_argument("--epochs", type=int, default=3, help="Training epochs")
@@ -336,10 +344,10 @@ def main():
                 ckpt_path = f"./checkpoints/{ckpt_name}"
                 
             if os.path.exists(ckpt_path):
-                gate.load_state_dict(torch.load(ckpt_path, map_location=device))
+                gate.load_state_dict(torch.load(ckpt_path, map_location=device, weights_only=True))
                 print(f"[INFO] Successfully loaded {ckpt_path}")
             else:
-                print(f"[WARNING] Checkpoint {ckpt_path} not found. Evaluating with untrained weights!")
+                raise FileNotFoundError(f"Checkpoint {ckpt_path} not found. Train first or pass --load_weight.")
         else:
             gate = train_gate(args, device, alignmark, distorter, dataset_train, dataset_val)
         
