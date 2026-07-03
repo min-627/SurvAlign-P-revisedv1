@@ -223,10 +223,12 @@ class UnifiedSpeechDataset(Dataset):
             self._init_vctk(download)
         elif self.dataset_type == "ljspeech":
             self._init_ljspeech(download)
+        elif self.dataset_type == "combined":
+            self._init_combined(download)
         else:
             raise ValueError(
                 f"지원하지 않는 데이터셋 유형: {self.dataset_type}. "
-                "'librispeech', 'vctk', 'ljspeech' 중 선택하세요."
+                "'librispeech', 'vctk', 'ljspeech', 'combined' 중 선택하세요."
             )
 
     def _init_librispeech(self, download):
@@ -343,6 +345,49 @@ class UnifiedSpeechDataset(Dataset):
 
         # 단일 화자 → 파일 인덱스 기반 분할 (seed=42 고정으로 재현성 보장)
         self.files = self._split_by_index(all_files)
+
+    def _init_combined(self, download):
+        """LibriSpeech, VCTK, LJSpeech를 모두 병합하여 원 논문 방식(Test 600개) 구현."""
+        # 1. LibriSpeech 파일 탐색
+        lib_dir = f"./data/LibriSpeech/{self.dataset_name}"
+        if download and (not os.path.exists(lib_dir) or not os.listdir(lib_dir)):
+            self._download_librispeech()
+        lib_files = [os.path.join(dp, f) for dp, dn, fn in os.walk(lib_dir) for f in fn if f.endswith((".flac", ".wav"))]
+
+        # 2. VCTK 파일 탐색
+        vctk_dir = "./data/VCTK/VCTK-Corpus-0.92/wav48_silence_trimmed"
+        if not os.path.exists(vctk_dir) and os.path.exists("./data/VCTK/wav48_silence_trimmed"):
+            vctk_dir = "./data/VCTK/wav48_silence_trimmed"
+        if download and not os.path.exists(vctk_dir):
+            try: torchaudio.datasets.VCTK_092(root="./data/VCTK", download=True)
+            except: pass
+        vctk_files = [os.path.join(dp, f) for dp, dn, fn in os.walk(vctk_dir) for f in fn if f.endswith((".flac", ".wav"))]
+
+        # 3. LJSpeech 파일 탐색
+        lj_dir = "./data/LJSpeech/LJSpeech-1.1/wavs"
+        if not os.path.exists(lj_dir) and os.path.exists("./data/LJSpeech/wavs"):
+            lj_dir = "./data/LJSpeech/wavs"
+        if download and not os.path.exists(lj_dir):
+            try: torchaudio.datasets.LJSPEECH(root="./data/LJSpeech", download=True)
+            except: pass
+        lj_files = [os.path.join(lj_dir, f) for f in os.listdir(lj_dir) if f.endswith((".wav", ".flac"))]
+
+        def get_split(files):
+            if len(files) == 0: return []
+            rng = np.random.RandomState(42)
+            indices = np.arange(len(files))
+            rng.shuffle(indices)
+            test_idx = indices[:min(200, len(indices))]
+            rest_idx = indices[min(200, len(indices)):]
+            n_cal = int(len(rest_idx) * 0.1)
+            cal_idx = rest_idx[:n_cal]
+            train_idx = rest_idx[n_cal:]
+            if self.split == "test": return [files[i] for i in test_idx]
+            elif self.split == "calib": return [files[i] for i in cal_idx]
+            else: return [files[i] for i in train_idx]
+
+        self.files = get_split(lib_files) + get_split(vctk_files) + get_split(lj_files)
+        print(f"[DATASET] COMBINED {self.split.upper()} 세트 (원 논문 세팅) 구성 완료. 총 파일 수: {len(self.files)}")
 
     def _split_by_speaker(self, file_spk_pairs):
         """화자 ID 기준 80/10/10 격리 분할."""
