@@ -134,3 +134,4 @@ run_all_experiments.bat
   `python phase2_training.py --mode proposed_gate --map_type survival --dataset_type vctk --test_only --load_weight ./checkpoints/best_gate_librispeech_proposed_gate_survival.pth`
 * **SOTA 1:1 비교 방어 (`--dataset_type combined`)**: 원 논문과 똑같이 3개 데이터셋을 모두 섞어서 거대 학습을 진행합니다.
   `python phase2_training.py --mode proposed_gate --map_type survival --dataset_type combined`
+

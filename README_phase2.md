@@ -34,3 +34,4 @@
 3. **Best Model 자동 저장**: Epoch마다 Loss를 평가하여 가장 우수한 모델만 `checkpoints/best_gate_*.pth`에 갱신 및 저장합니다.
 4. **엄밀한 평가 루프**: Test 셋 전체에 대해 4가지 오디오 품질 지표(PESQ, STOI, SI-SDR, L2-Ratio)와 7가지 왜곡 환경(Clean 포함 8개 시나리오, 신규 FACodec proxy 포함)의 강건성 지표(BER)를 평가합니다.
 5. **CSV 자동 로깅**: 훈련이 끝날 때마다 결과 테이블이 `results/phase2_results.csv`에 한 줄씩 누적 저장됩니다. 이 CSV 파일을 엑셀이나 논문에 그대로 복사해 붙여넣으면 됩니다.
+

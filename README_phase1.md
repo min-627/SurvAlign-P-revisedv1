@@ -44,3 +44,4 @@ python phase1_attribution.py --dataset_type librispeech --split test
 ### 3. 시각화 결과 (Visualization)
 * `results/phase1_map_comparison.png` 경로에 스펙트로그램 오버레이 이미지가 저장됩니다.
 * **Survival Map**과 **Decoder Gradient Map**을 육안으로 비교할 수 있으며, 오버레이 이미지에서 Green(Survival), Red(Gradient), Yellow(Overlap) 영역을 확인할 수 있습니다.
+
