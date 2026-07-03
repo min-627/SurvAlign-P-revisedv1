@@ -34,10 +34,12 @@ python phase1_attribution.py --dataset_type librispeech --split test
 * **High-Gradient (Top 20%)**: Decoder Gradient Map 기준 상위 20% 잔차만 남긴 상태.
 * **Random 20%**: 무작위 20% 잔차만 남긴 상태.
 
-**[해석 기준 및 분기 결정]**
-* 마스킹 시 OOD(Out-of-Distribution) 문제를 피하기 위해 **Soft Masking과 Local Energy Noise Filling** 기법이 적용됩니다.
-* **Paired t-test**: `High-Survival`과 `Low-Survival`의 평균 BER 차이에 대해 통계적 유의성(p-value < 0.05)을 검증합니다.
-* 유의미한 차이가 확인되면, Survival Map이 실제 에러율 방어에 인과적으로 기여함이 증명된 것이므로 **Phase 2 (Survival Gate 학습)** 로 진입할 타당성을 확보하게 됩니다.
+**[해석 기준 및 분기 결정 (Multi-stage Decision Logic)]**
+* 마스킹 시 OOD(Out-of-Distribution) 문제를 피하기 위해 **Soft Masking(Gaussian Blur)** 기법이 적용됩니다. 잔차(Residual)를 마스킹하므로 자연스럽게 원본 오디오(Clean Speech)가 남아 별도의 Noise Filling 없이도 완벽한 대조군이 성립됩니다.
+* Phase 2 (Survival Gate 본학습) 진입 여부는 다음의 다단계 논리로 결정됩니다:
+  1. **강한 상관관계 (r > 0.5)**: 인과성이 명백하므로 즉시 Phase 2로 진입합니다.
+  2. **약한 상관관계 (r < 0.3)**: 물리적 생존율과 디코더의 필요가 불일치하므로, Phase 2B (Decoder-guided Gate) 등 대체 방법론으로 분기합니다.
+  3. **회색 지대 (0.3 <= r <= 0.5)**: 상관계수만으로 단정 짓기 어려운 구간입니다. 이 경우 **마스킹 실험의 Paired t-test 결과**를 우선합니다. `High-Survival` 영역 보존이 `Low-Survival` 영역 보존보다 통계적으로 유의미하게(p-value < 0.05 및 t-stat < 0) 방어력이 높음이 증명되면 Phase 2로 진입하고, 그렇지 않으면 Phase 2B로 분기합니다.
 
 ### 3. 시각화 결과 (Visualization)
 * `results/phase1_map_comparison.png` 경로에 스펙트로그램 오버레이 이미지가 저장됩니다.
