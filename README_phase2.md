@@ -17,7 +17,7 @@
 사용자의 편의를 위해 각 실험 시나리오별로 클릭 한 번에 실행 가능한 배치 스크립트(.bat)를 제공합니다.
 
 ### 전체 일괄 실행 (가장 권장)
-4가지 시나리오를 순차적으로 모두 학습 및 평가하고 결과를 모아줍니다.
+6가지 시나리오를 순차적으로 모두 학습 및 평가하고 결과를 모아줍니다.
 * **`run_all_experiments.bat`**
 
 ### 개별 시나리오 실행
@@ -32,5 +32,5 @@
 1. **Epoch 기반 Full Training**: 임의의 Step 기반이 아닌 정규 Epoch(기본 3~5 Epoch)를 돌며 선택된 데이터셋 전체를 학습합니다.
 2. **엄격한 L2 Waveform Projection (Hard Constraint)**: Gate를 통해 수정된 잔차의 에너지가 원본 잔차 에너지를 절대 초과하지 못하도록 투영(Projection) 제약을 가합니다. 이를 통해 **"단순히 신호 에너지를 증폭시켜 강건성을 높였다"**는 Energy Cheating 논란을 수학적/구조적으로 완벽히 차단합니다.
 3. **Best Model 자동 저장**: Epoch마다 Loss를 평가하여 가장 우수한 모델만 `checkpoints/best_gate_*.pth`에 갱신 및 저장합니다.
-4. **엄밀한 평가 루프**: Test 셋 전체에 대해 4가지 오디오 품질 지표(PESQ, STOI, SI-SDR, L2-Ratio)와 6가지 왜곡 환경의 강건성 지표(BER)를 평가합니다.
+4. **엄밀한 평가 루프**: Test 셋 전체에 대해 4가지 오디오 품질 지표(PESQ, STOI, SI-SDR, L2-Ratio)와 7가지 왜곡 환경(Clean 포함 8개 시나리오, 신규 FACodec proxy 포함)의 강건성 지표(BER)를 평가합니다.
 5. **CSV 자동 로깅**: 훈련이 끝날 때마다 결과 테이블이 `results/phase2_results.csv`에 한 줄씩 누적 저장됩니다. 이 CSV 파일을 엑셀이나 논문에 그대로 복사해 붙여넣으면 됩니다.

@@ -129,7 +129,7 @@ python phase2_training.py --mode proposed_gate --map_type survival --dataset_typ
 # [트랙 3] 원 논문 방식(Test 600개)으로 SOTA 단일 모델 거대 학습 및 평가
 python phase2_training.py --mode proposed_gate --map_type survival --dataset_type combined --epochs 5 --batch_size 8
 
-# 3 데이터셋 × 5 모드 = 총 15개 논문 실험 일괄 훈련 및 평가 (트랙 1)
+# 3 데이터셋 × 6 모드 = 총 18개 논문 실험 일괄 훈련 및 평가 (트랙 1)
 run_all_experiments.bat
 
 # 저장된 체크포인트로 전체 실험 평가만 일괄 수행
