@@ -17,17 +17,20 @@
 
 ## 💡 2. 핵심 인사이트: Survival Map vs Decoder Gradient Map
 
-SurvAlign-P의 가장 핵심적인 질문은 다음과 같습니다:
-> **"워터마크가 물리적으로 잘 살아남는 시간-주파수 영역이, 디코더 인공지능이 실제로 잘 읽어내는 영역과 일치하는가?"**
+기존 딥러닝 워터마크 모델들은 강건성을 높이기 위해 '왜곡 시뮬레이터'와 '디코더'를 한 번에 엮어 거대한 역전파(Backpropagation)를 수행했습니다. 하지만 이 방식은 학습이 매우 불안정하고 새로운 왜곡에 취약합니다. 
 
-이를 규명하기 위해 두 가지 맵(Map)을 정의하고 비교합니다:
+이에 SurvAlign-P는 다음과 같은 근본적인 질문을 던집니다:
+> **"워터마크 신호가 물리적으로 살아남기 좋은 시간-주파수(T-F) 천연 요새가, 과연 디코더 인공지능이 정답을 맞히기 위해 필사적으로 의존하는 핵심 급소와 일치할까?"**
 
-| 맵(Map) | 의미 | 계산 방식 | 측정 시점 |
-|:---|:---|:---|:---|
-| **Survival Map** | **물리적 생존율** | 7가지 왜곡 시뮬레이터(FACodec 등) 통과 후 잔차 보존율(SIR) 산출 | 왜곡 **후** (미래 예측) |
-| **Gradient Map** | **수학적 민감도** | 디코더 CE Loss의 입력 파형에 대한 오차 역전파 크기 | 왜곡 **전** (현재 상태) |
+이를 규명하기 위해 다음 두 가지 맵(Map)을 정의하고 겹쳐봅니다:
 
-* **상관관계의 의의**: 만약 두 맵의 상관성이 높다면, 복잡하고 값비싼 역전파를 거치지 않고도 오직 직관적인 "물리적 생존율(Survival Map)"만으로 디코더의 취약점을 보완할 수 있는 강력한 이론적/수학적 근거가 완성됩니다.
+| 맵(Map) | 성격 | 의미 | 계산 방식 | 시점 |
+|:---|:---|:---|:---|:---|
+| **Survival Map** | 물리적 / 직관적 | **물리적 생존율** | 7가지 혹독한 왜곡(FACodec, MP3 등)을 통과시킨 뒤, 각 T-F 픽셀별 잔차 보존율(SIR) 산출 | 왜곡 **후** |
+| **Gradient Map** | 딥러닝 / 역전파 | **수학적 민감도** | 입력 오디오 픽셀이 미세하게 변할 때 디코더의 에러율(CE Loss)이 치솟는 오차 역전파 크기 | 왜곡 **전** |
+
+* **상관관계가 갖는 결정적 의의**: 
+  만약 이 두 맵의 상관성이 높다면(Phase 1 증명), 우리는 **더 이상 디코더의 무거운 역전파에 의존할 필요가 없습니다.** 단순히 가볍고 직관적인 "물리적 생존율(Survival Map)"을 나침반(Prior) 삼아 워터마크 에너지를 조율(Phase 2)하기만 해도, 디코더가 이를 자연스럽게 찰떡같이 읽어낸다는 강력한 수학적·이론적 근거가 완성되기 때문입니다.
 
 ---
 
@@ -93,50 +96,41 @@ pip install pesq pystoi scikit-learn soundfile torchaudio
 
 ---
 
-## 🏃 6. 실행 및 평가 (Running & Evaluation)
+## 🏃 6. 전체 실험 진행 순서 (Step-by-Step Guide)
 
-사용자의 편의를 위해 마우스 더블클릭이나 단순 명령어 한 줄로 모든 실험을 진행할 수 있는 `.bat` 스크립트를 제공합니다.
+본 프로젝트는 통계적 검증(Phase 1)부터 대규모 AI 본학습 및 평가(Phase 2)까지 논문 작성을 위한 완벽한 파이프라인을 제공합니다. 다음 순서대로 실행하시면 전체 실험 결과를 손쉽게 확보할 수 있습니다.
 
-### Phase 1: 상관관계 및 인과성 분석
+### Step 1. 가중치 및 환경 세팅 확인
+가장 먼저 `AlignMark/weight.pth`와 `SpeechTokenizer.pt` 파일이 제 위치에 있는지 확인합니다. (`5. 시작하기` 항목 참조)
+
+### Step 2. Phase 1: 가설 검증 및 인과성 분석 (필수 통과 관문)
+본학습(Phase 2)에 돌입하기 전, 우리의 핵심 가설이 맞는지 데이터셋 단위로 통계적 검증을 수행합니다.
+
 ```bash
-# LibriSpeech에서 Phase 1 분석
+# LibriSpeech에 대해 Phase 1 분석 실행
 python phase1_attribution.py --dataset_type librispeech --batch_size 4
-
-# VCTK에서 Phase 1 분석
-python phase1_attribution.py --dataset_type vctk --batch_size 4
 ```
+* **결과 확인**: 터미널 출력 및 `results/phase1_summary_librispeech.txt`에서 상관계수(r)와 t-test 결과를 확인합니다.
+* **분기 조건**: 스크립트가 다단계 로직(r 값 및 p-value 분석)을 거쳐 **"Proceed to Phase 2"**라는 결론을 내리면 다음 스텝으로 넘어갑니다. (시각화된 맵은 `results/phase1_map_comparison.png`에서 확인 가능합니다.)
 
-### Phase 2: Survival Gate 본학습 및 평가
-5가지 논문용 실험 모드를 지원합니다: `baseline`, `uniform`, `random_gate`, `energy_gate`, `proposed_gate`
-(※ `energy_gate`는 단순 음압 기반 가중치로, 제안 모델의 우수성을 입증하기 위한 핵심 대조군입니다.)
-
-**✅ 데이터셋 분할 및 활용 규정 (Train / Test Split)**
-본 프로젝트는 리뷰어의 공격을 완벽히 방어하기 위해 **세 가지 평가 트랙**을 동시 지원합니다.
-
-| 트랙 명칭 | `--dataset_type` | 훈련 데이터 (Train) | 평가 데이터 (Test) | 연구/방어 목적 |
-|:---|:---|:---|:---|:---|
-| **1. 개별 증명 트랙** | `librispeech` (등) | 1개 도메인 80% | 동일 도메인 10% (화자격리) | 도메인 독립적인 본질적 성능 입증 (Ablation) |
-| **2. Cross-Dataset 트랙** | `vctk` + `--load_weight` | A 도메인 (예: LibriSpeech) | B 도메인 (예: VCTK) | 미학습 OOD(Out-of-Distribution)에 대한 극강의 일반화 성능 입증 |
-| **3. 원 논문 모방 SOTA 트랙**| `combined` | 3개 데이터셋 전체 (600개 제외) | 3개 데이터셋 랜덤 600개 | 원 논문 AlignMark와 완벽히 동일한 조건에서의 1:1 최고 성능(SOTA) 비교 |
+### Step 3. Phase 2: 대규모 본학습 및 18개 시나리오 평가 (One-Click)
+가설이 증명되었다면, 논문에 실을 **최종 성능 테이블(Excel)**을 추출하기 위해 본학습과 평가를 돌립니다. 3개 데이터셋 × 6개 모드를 아우르는 총 18번의 방대한 실험이 자동화되어 있습니다.
 
 ```bash
-# [트랙 1] 개별 실험 실행 예시
-python phase2_training.py --mode proposed_gate --map_type survival --dataset_type vctk --epochs 5 --batch_size 8
-
-# [트랙 2] Cross-Dataset 평가 (LibriSpeech로 훈련한 모델을 VCTK에서 테스트)
-python phase2_training.py --mode proposed_gate --map_type survival --dataset_type vctk --load_weight ./checkpoints/best_gate_librispeech_proposed_gate_survival.pth
-
-# [트랙 3] 원 논문 방식(Test 600개)으로 SOTA 단일 모델 거대 학습 및 평가
-python phase2_training.py --mode proposed_gate --map_type survival --dataset_type combined --epochs 5 --batch_size 8
-
-# 3 데이터셋 × 6 모드 = 총 18개 논문 실험 일괄 훈련 및 평가 (트랙 1)
+# 18개 실험 일괄 학습 및 평가 (가장 권장)
 run_all_experiments.bat
-
-# 저장된 체크포인트로 전체 실험 평가만 일괄 수행
-test_all_experiments.bat
 ```
+* 이 스크립트는 아무 조작을 가하지 않은 `baseline`부터 대조군인 `energy_gate`, 최종 제안 모델인 `proposed_gate`까지 순차적으로 훈련(`Epoch 5`)하고 최고 성능의 모델 체크포인트를 `checkpoints/` 폴더에 자동 저장합니다.
+* 각 실험이 끝날 때마다 4가지 오디오 품질 지표(PESQ, STOI 등)와 8가지 왜곡 방어 지표(Clean, FACodec 포함)가 측정됩니다.
 
-### 주요 출력 리포트
-- **Phase 1**: `results/phase1_summary_{dataset}.txt` — 상관계수 및 이진 마스킹 ablation 결과 (인과성 증명).
-- **Phase 2**: `results/phase2_results.csv` — 데이터셋별 Fidelity/Robustness 지표가 정리된 최종 엑셀 테이블 (논문 첨부용).
-- **시각화**: `results/phase1_map_comparison.png` — Survival Map vs Gradient Map 비교 플롯.
+### Step 4. 최종 결과표(CSV) 수집 및 논문 작성
+모든 실험이 완료되면 `results/phase2_results.csv` 파일이 생성됩니다.
+이 CSV 파일에는 데이터셋별, 모드별 성능이 엑셀 표 형태로 예쁘게 누적되어 있습니다. 이 결과를 그대로 복사하여 논문의 Table에 붙여넣고 분석을 진행하시면 됩니다.
+
+---
+**💡 추가 평가 트랙 (옵션)**
+논문 심사(Defense) 과정에서 리뷰어가 "다른 데이터셋에서는 안 통하는 것 아니냐?" 또는 "원 논문(AlignMark)과 완전히 똑같은 조건에서 비교해봐라" 라고 공격할 경우를 대비하여 다음 트랙을 추가로 구동할 수 있습니다.
+* **OOD 일반화 방어 (`--load_weight`)**: LibriSpeech에서 학습된 체크포인트를 VCTK에서 테스트합니다.
+  `python phase2_training.py --mode proposed_gate --map_type survival --dataset_type vctk --test_only --load_weight ./checkpoints/best_gate_librispeech_proposed_gate_survival.pth`
+* **SOTA 1:1 비교 방어 (`--dataset_type combined`)**: 원 논문과 똑같이 3개 데이터셋을 모두 섞어서 거대 학습을 진행합니다.
+  `python phase2_training.py --mode proposed_gate --map_type survival --dataset_type combined`
