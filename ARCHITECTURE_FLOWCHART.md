@@ -10,7 +10,7 @@
          ▼
 [ 1. survalign_p.py ] (기반 엔진 / 뼈대)
          │  - 기존 AlignMark를 부르기 쉽게 포장 (AlignMarkManager)
-         │  - 화자 분할 기반 데이터셋 로딩 (RealLibriSpeechDataset)
+         │  - 화자 격리 분할 및 다중 데이터셋 로딩 (UnifiedSpeechDataset)
          │  - 6가지 오디오 왜곡 필터 구현 (DifferentiableDistortion)
          │  - *단독으로 실행하는 파일이 아니며, 부품 창고 역할 수행*
          │
