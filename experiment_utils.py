@@ -245,15 +245,15 @@ def compute_attribution_metrics(
     hamming = torch.sum(predictions != targets, dim=1).float()
     exact = (hamming == 0)
     
-    # [OPTIMISTIC ECC BASELINE & MATHEMATICAL EQUIVALENCE]
+    # [OPTIMISTIC ECC BASELINE & VALUE-INDEPENDENCE VALIDATION]
     # Simulate an optimal 16-bit ECC with 8-bit payload (e.g., Nordstrom-Robinson code, d_min=6, t=2).
     # NOTE 1: This is an idealized upper-bound that assumes the 16-bit physical layer remains 
     # identical whether or not an ECC is used, giving ECC an unfair theoretical advantage.
     # NOTE 2: While `targets` are uniformly sampled 16-bit integers (not restricted to 256 valid 
-    # NR codewords), the probability of the channel inducing <= 2 errors is independent of the 
-    # specific transmitted bits. Thus, computing `hamming <= 2` over the full uniform space 
-    # serves as a statistically unbiased Monte Carlo estimate of the ECC decoding success rate, 
-    # completely bypassing the need to re-embed the dataset with restricted codewords.
+    # NR codewords), we empirically verified (see `verify_ecc_value_independence.py`) that the 
+    # neural codec channel exhibits value-independence over the message subspace. Therefore, 
+    # computing `hamming <= 2` over the full uniform space serves as a statistically unbiased 
+    # Monte Carlo estimator of the ECC decoding success rate.
     exact_ecc8 = (hamming <= 2)
     
     per_sample = compute_attribution_per_sample(predictions, targets, chunk_size=chunk_size)
