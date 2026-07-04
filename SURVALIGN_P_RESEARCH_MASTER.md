@@ -245,3 +245,5 @@ graph TD
     *   python phase2_training.py --map_type uniform (Uniform Allocation 대조군)
     *   (추가 데이터셋 인자 --dataset_type vctk 등을 통한 확장 실험 수행)
 *   **해석**: "무작정 에너지를 분배한 것(Random/Uniform)보다 물리적 지식을 활용한 것(Survival)이 압도적으로 우수하다"는 결론을 내리며 프레임워크의 학술적 타당성을 종결짓습니다.
+
+<!-- Finalized empirical verification at N=300 -->
