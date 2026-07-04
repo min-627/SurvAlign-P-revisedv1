@@ -69,7 +69,8 @@ graph TD
         I2 --> J2["Watermarked Audio X_w"]
         
         J2 --> K2["Held-out Attacks<br>FACodec, MP3"]
-        K2 --> L2[
+        K2 --> L2["Message Decoding & Metric Eval"]
+    end
 ```
 
 ## 5. 각 Phase별 학습 내용 및 입출력 차원 명세
