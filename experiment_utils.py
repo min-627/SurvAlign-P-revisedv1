@@ -244,6 +244,9 @@ def compute_attribution_metrics(
     bit_correct = (predictions == targets).float()
     hamming = torch.sum(predictions != targets, dim=1).float()
     exact = (hamming == 0)
+    # Simulate an optimal 16-bit ECC with 8-bit payload (e.g., Nordstrom-Robinson code)
+    # which has d_min=6 and can correct up to 2 bit errors (t=2).
+    exact_ecc8 = (hamming <= 2)
     per_sample = compute_attribution_per_sample(predictions, targets, chunk_size=chunk_size)
     true_dist = per_sample["true_hamming"]
     nearest_wrong = per_sample["nearest_wrong_hamming"]
@@ -256,6 +259,7 @@ def compute_attribution_metrics(
         "bit_accuracy": float(bit_correct.mean().item()),
         "ber": float(1.0 - bit_correct.mean().item()),
         "exact_message_accuracy": float(exact.float().mean().item()),
+        "exact_match_ecc8": float(exact_ecc8.float().mean().item()),
         "mean_hamming_distance": float(hamming.mean().item()),
         "far_strict": float(strict_fail.float().mean().item()),
         "far_lenient": float(lenient_fail.float().mean().item()),

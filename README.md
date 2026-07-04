@@ -35,7 +35,7 @@ SurvAlign-P addresses the critical vulnerabilities of existing audio watermarkin
 `survalign_p.py`의 독립 실행 파이프라인은 legacy/experimental 용도입니다.
 논문용 실험은 `phase1_attribution.py`와 `phase2_training.py`를 사용하세요.
 
-## 2. Important Evaluation Principles
+## 3. Important Evaluation Principles
 
 1. **Map/Train/Validation/Test 공격 분리**
    같은 공격 또는 같은 codec family를 여러 단계에서 반복 사용하면 일반화 주장이 성립하지 않습니다.
@@ -59,7 +59,7 @@ SurvAlign-P addresses the critical vulnerabilities of existing audio watermarkin
    Gate는 코덱의 실제 주파수 선택성을 backpropagation으로 학습할 수 없음.
    이 한계는 논문 Limitations에 명시 필요.
 
-## 3. Installation
+## 4. Installation
 
 ```bash
 pip install -r AlignMark/requirements.txt
@@ -72,7 +72,7 @@ pip install -r requirements-survalign.txt
 
 파일이 없으면 실험은 즉시 중단됩니다.
 
-## 4. Phase 1: Controlled Diagnostic
+## 5. Phase 1: Controlled Diagnostic
 
 Phase 1은 학습을 하지 않습니다. 동일 에너지 마스킹에서 어떤 T-F prior가
 복호 정보를 가장 잘 보존하는지 진단합니다.
@@ -92,7 +92,7 @@ python phase1_attribution.py \
 비교 대상: High/Low Survival, Gradient Saliency, Codec Utility,
 Residual/Speech-Energy/VAD, Random×20. 자세한 내용은 `README_phase1.md` 참조.
 
-## 5. Phase 2: Gate Training
+## 6. Phase 2: Gate Training
 
 ```bash
 python phase2_training.py \
@@ -115,7 +115,7 @@ python phase2_training.py \
 
 자세한 내용은 `README_phase2.md` 참조.
 
-## 6. External Held-out Attacks
+## 7. External Held-out Attacks
 
 외부 모델은 저장소에 포함하지 않습니다. `{input}`과 `{output}` WAV 경로를 받는
 래퍼 명령을 준비한 뒤 실행합니다.
@@ -137,7 +137,7 @@ python phase2_training.py --mode baseline --test_attacks ffmpeg_mp3 --mp3_bitrat
 
 외부 wrapper 규격은 `EXTERNAL_ATTACKS.md`를 참고하세요.
 
-## 7. Output Metrics
+## 8. Output Metrics
 
 공격별로 다음을 저장합니다:
 - Bit Accuracy / BER
@@ -152,11 +152,13 @@ python phase2_training.py --mode baseline --test_attacks ffmpeg_mp3 --mp3_bitrat
 전체 메트릭, 공격 유형, 실험 모드에 대한 종합 정리는 `EXPERIMENT_OVERVIEW.md`를 참조하세요.
 아키텍처 흐름도는 `ARCHITECTURE_FLOWCHART.md`를 참조하세요.
 
-## 8. Data Splits
+## 9. Data Splits
 
 - LibriSpeech/VCTK: speaker-disjoint
 - LJSpeech: 단일 화자이므로 file-disjoint만 가능
 - `combined_protocol=speaker_disjoint`: LibriSpeech/VCTK 화자 격리 + LJSpeech 파일 격리
 - `combined_protocol=paper`: 데이터셋별 200개 test 파일 (화자 누출 가능성 명시 필요)
+
+**※ 주의: 본 논문의 모든 메인 리포트 결과(표 및 그래프)는 엄격한 `speaker_disjoint` 프로토콜을 기준으로 작성되었습니다.**
 
 세부 수정 내역은 `MODIFICATION_REPORT.md`를 참고하세요.
