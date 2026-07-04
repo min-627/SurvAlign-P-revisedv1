@@ -21,7 +21,7 @@ pip install -r requirements-survalign.txt
 ### 2. 채널 독립성 통계 검증 (TOST)
 \\ash
 python verify_ecc_value_independence.py
-\*Note: N=100의 표본 크기를 가지며 ±15%p 마진 내에서의 동등성을 검증합니다.*
+\*Note: N=300의 표본 크기를 가지며 ±15%p 마진 내에서의 동등성을 검증합니다.*
 
 ### 3. Phase 1 - Attribution 시각화 (No Training)
 \\ash
