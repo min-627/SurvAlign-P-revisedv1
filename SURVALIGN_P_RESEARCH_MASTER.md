@@ -1,9 +1,10 @@
 # SurvAlign-P: 물리적 사전지식 기반 워터마크 잔차 재분배 프레임워크 종합 연구 리포트
 
-## 1. 연구 배경 및 문제 설정 (Research Background)
-**AlignMark**(기존 연구)는 신경망을 통해 오디오/이미지의 특정 피처 영역을 보존(Feature-Aligned)하여 워터마크를 은닉하는 기술을 제시했습니다. 하지만 기존 딥러닝 기반 워터마킹 방법론들은 실제 행성 규모(Planetary-scale) 환경이나 엄격한 통신 이론(Information Theory) 관점에서 심각한 논리적, 학술적 결함을 지니고 있었습니다.
+## 1. 연구 배경 및 핵심 기여 (Research Background & Core Contribution)
+**AlignMark**(기존 연구)는 신경망을 통해 오디오의 특정 피처 영역을 보존(Feature-Aligned)하여 워터마크를 은닉하는 기술을 제시했습니다. 하지만 기존 딥러닝 기반 워터마킹 방법론들은 실제 행성 규모(Planetary-scale) 환경이나 엄격한 통신 이론(Information Theory) 관점에서 심각한 논리적, 학술적 결함을 지니고 있었습니다.
 
-**SurvAlign-P**는 이러한 결함을 비판적으로 분석하고, 수학적 모델링(Analytic Survival)과 에러 정정 코드(ECC)와의 공정한 이론적 상한 비교, 그리고 물리적 채널 생존율(Survival Map)이라는 사전지식(Prior)을 결합하여 강건성을 혁신적으로 끌어올린 프레임워크입니다.
+**SurvAlign-P**는 이러한 결함을 비판적으로 분석하며, 본 논문의 단 하나뿐인 핵심 주장을 전개합니다: **"워터마크 에너지는 신경망 코덱의 압축 과정에서 살아남을 물리적 확률(Physical Survival Map)이라는 사전지식(Analytic Prior)에 비례하여 재배치되어야 한다."**
+본 연구에서 제안하는 미분 가능 게이트(Gate)는 완벽한 아키텍처라기보다는, 이 물리적 사전지식이 얼마나 강력한 일반화 성능을 이끌어내는지를 입증하기 위한 '최소한의 검증용 도구(Vehicle)' 역할을 수행합니다. 수학적 결함(Identity STE)을 안고 있는 어설픈 Gate조차도 Survival Map의 지도를 받을 경우 폭발적인 강건성 향상을 달성함을 증명함으로써, Analytic Prior의 본질적 우수성을 학술적으로 확증합니다.
 
 ---
 
@@ -189,10 +190,11 @@ graph TD
     *   **Learning Rate**: $1 \times 10^{-4}$ (AdamW)
     *   **왜곡 제약(Distortion Constraint)**: `equal` 모드 (Baseline과 Proposed 모델 간의 L2 Energy Norm을 수학적으로 100% 동일하게 강제하여, 공정한 음질 하의 비교 수행)
 *   **다중 시드(Multi-seed) 설정**: Global Seed를 `42`, `43`, `44`로 변경하며 데이터 샘플링, 모델 초기화, 공격 확률을 완전히 난수화하여 **총 3회 독립 반복 실행**.
-*   **공격 프로토콜 (Attack Protocol)**:
-    *   **Train Attacks (학습 시 노출)**: `noise` (AWGN), `lowpass` (저역통과 필터), `resample` (리샘플링), `reconstruct_nq6` (EnCodec 양자화 레벨 6)
-    *   **Validation Attacks (검증용)**: `bandpass`, `reconstruct_nq8`
-    *   **Test Attacks (Held-out, 미노출 흑조 공격)**: `ffmpeg_mp3` (MP3 압축 손실 등, 모델이 학습 과정에서 전혀 보지 못한 공격에 대한 생존율 평가)
+*   **공격 프로토콜 (Disjoint Attack Sets 전략)**:
+    정보 누수(Data Leakage)를 원천 차단하고 제로샷(Zero-shot) 수준의 일반화 능력을 입증하기 위해, Survival Map을 생성할 때 쓰인 공격과 Gate 훈련에 쓰인 공격을 완전히 분리(Disjoint)합니다.
+    *   **Survival Map 생성용 공격 (Prior)**: `reconstruct_nq6`, `reconstruct_nq8`, `spectral_proxy` (오직 신경망/스펙트럼 코덱의 파괴적 특성만 모델링)
+    *   **Train Attacks (Gate 훈련용)**: `noise`, `lowpass`, `resample`, `bandpass` (Gate는 훈련 중에 신경망 코덱을 전혀 보지 못하고 오직 고전적 신호처리 노이즈만 경험함)
+    *   **Test Attacks (Held-out, 미노출 흑조 공격)**: `ffmpeg_mp3`, `facodec`, `encodec` 등 (훈련 과정에서 보지 못한 새로운 압축/신경망 코덱에 대한 방어력 평가)
 
 #### C. 타 도메인 확장성 평가 (VCTK, LJSpeech)
 *   **학습 하이퍼파라미터**: LibriSpeech 메인 평가와 완벽히 동일 (5 Epochs, Batch 8, LR $1 \times 10^{-4}$, Equal mode)
