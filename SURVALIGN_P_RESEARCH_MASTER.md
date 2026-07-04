@@ -234,9 +234,9 @@ graph TD
 *   **해석**: 에너지(Energy)와 생존율 간의 뚜렷한 양의 상관관계를 통해 "물리적 속성을 Prior로 삼아 에너지를 재배치해야 한다"는 설계 철학을 뒷받침합니다.
 
 ### Step 4. 메인 강건성 평가 및 가설 검정 (Phase 2 Multi-seed)
-*   **목적**: 고안된 Gate 모듈을 실제로 학습시키고, 흑조 공격(Test Attack)에 대한 Exact-Match 개선 폭의 유의성을 통계적으로 증명합니다.
-*   **스크립트**: python verify_main_results_significance.py
-*   **해석**: 내부적으로 phase2_training.py를 3개의 시드(Seed: 42, 43, 44)로 각각 반복 학습/평가한 뒤, Baseline과 Proposed 모델 간의 **Paired T-test**를 자동으로 수행합니다. 여기서 도출된 p-value(<0.05)가 논문 Table I/II의 핵심을 관통하는 가장 중요한 성과(Main Result)가 됩니다.
+*   **목적**: 고안된 Gate 모듈을 실제로 학습시키고, 흑조 공격(Test Attack)에 대한 Exact-Match 개선 폭의 유의성을 통계적으로 검증합니다.
+*   **스크립트**: `python verify_main_results_significance.py`
+*   **해석**: 내부적으로 `phase2_training.py`를 3개의 시드(Seed: 42, 43, 44)로 각각 반복 학습/평가한 뒤, Baseline과 Proposed 모델 간의 **Paired T-test**를 자동으로 수행합니다. 여기서 도출될 p-value 통계량이 (유의수준 0.05 미만을 달성할 경우) 논문 Table I/II의 핵심을 관통하는 가장 중요한 성과(Main Result)가 됩니다.
 
 ### Step 5. 절제 연구 및 도메인 확장 (Ablations & Generalizations)
 *   **목적**: 특정 조건에서의 오버피팅을 반박하고 방법론의 범용성을 입증합니다.
