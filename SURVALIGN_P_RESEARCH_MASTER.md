@@ -109,7 +109,7 @@ graph TD
 | 지표명 (Metric) | 수식 / 정의 | 활용 Phase | 원 논문 대비 개선점 |
 |---|---|---|---|
 | **Bit Accuracy (BA)** | $\frac{1}{L} \sum_{i=1}^{L} \mathbb{I}(\hat{m}_i = m_i)$ | Phase 2 (기본 평가) | 기존 논문이 주력으로 삼는 지표. 그러나 BA=95%라도 Exact Match는 매우 낮을 수 있음을 비판함. ($L$은 비트 길이) |
-| **Exact Match Acc** | $\mathbb{I}(\sum_{i=1}^{L} |\hat{m}_i - m_i| == 0)$ | Phase 2 (강건성 증명) | 실제 ID 매칭에 필요한 페이로드 전체 일치 확률. 원 논문은 이를 낮게 리포트하거나 간과함. |
+| **Exact Match Acc** | $\mathbb{I}(\sum_{i=1}^{L} \lvert\hat{m}_i - m_i\rvert == 0)$ | Phase 2 (강건성 증명) | 실제 ID 매칭에 필요한 페이로드 전체 일치 확률. 타 논문은 이 지표를 리포트하지 않거나 간과함 |
 | **ECC-8bit 상한 (P(Hamming $\le$ 2))** | $\mathbb{I}(\text{Hamming}(\hat{m}, m) \le 2)$ | Phase 2 (ECC 비교) | 원 논문에는 아예 존재하지 않는 지표. 페이로드를 포기하는 전통적 방식(ECC)의 "이상적 상한선" 역할을 함. |
 | **Analytic Survival MAE** | $\frac{1}{N_{test}} \sum \vert P_{analytic}(d \le 2) - P_{empirical}(d \le 2) \vert$ | Phase 2 (모델링 검증) | 원본 논문의 경험적 임계값에 반박하기 위해, 이항 분포 이론 곡선과 실제 곡선의 일치도를 측정. ($N_{test}$는 테스트 오디오 샘플 수) |
 | **TOST p-value** | $\max(1-\Phi(z_1), \Phi(z_2))$ | 독립 스크립트 검증 | "신경망 코덱은 특정 비트 패턴에 종속적이다"라는 반박을 통계적으로 사전 차단하는 동등성 검정. |
