@@ -28,7 +28,7 @@ from experiment_utils import set_global_seed
 def main():
     print("1. Setup Models & Codebook")
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    set_global_seed(42)
+    set_global_seed(999)
     
     alignmark = AlignMarkManager(device=device, latent_mode="public_code")
     distorter = DifferentiableDistortion(sr=16000, vae=alignmark.vae).to(device)
