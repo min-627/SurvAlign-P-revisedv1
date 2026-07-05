@@ -127,7 +127,7 @@ graph TD
 ## 7. 향후 로드맵 및 한계점(Limitations)
 
 1. **학습 한계 (Identity STE)**: 코덱 내부의 양자화(Quantization)는 미분 불가능하여 Straight-Through Estimator (STE)를 사용합니다. 이는 Gate가 실제 코덱의 비선형적 주파수 선택성을 100% 역전파받지 못함을 의미하며, 이는 퓨어 딥러닝 기반 워터마킹의 본질적 한계로 논문에 명시됩니다.
-2. **채널 독립성의 물리적 범위(Scope)**: 본 연구의 TOST 통계 검증은 강력한 통계적 유의성(Power 96.1%, N=300)을 입증했으나, 단일 오디오 샘플(`example.wav`)과 특정 신경망 공격 채널(`EnCodec`)에 한정되어 검증되었습니다. 이것이 모든 종류의 오디오와 모든 블랙박스 채널에서 우주적인 독립성을 보장하지는 않습니다. 다만 본 논문의 Held-out 공격 평가를 수행하기 위한 "경험적으로 입증된 가장 실용적이고 편향 없는 Proxy"로서 정당화하는 데 목적을 둡니다.
+2. **채널 독립성의 물리적 범위(Scope)**: 본 연구의 TOST 통계 검증은 강력한 통계적 유의성(Power 96.1%, N=300)을 입증했으나, 단일 오디오 샘플(`example.wav`)과 특정 신경망 공격 채널(`SpeechTokenizer` 기반 프록시)에 한정되어 검증되었습니다. 이것이 모든 종류의 오디오와 모든 블랙박스 채널에서 우주적인 독립성을 보장하지는 않습니다. 다만 본 논문의 Held-out 공격 평가를 수행하기 위한 "경험적으로 입증된 가장 실용적이고 편향 없는 Proxy"로서 정당화하는 데 목적을 둡니다.
 3. **Paired T-test 자유도(Degree of Freedom) 한계**: 유사복제를 방지하기 위해 3-seed 단위(N=3)로 통계 검정을 설계했으나, N=3은 자유도가 2에 불과하여 정규성 검증이 어렵고 p-value의 표본변동성이 큽니다. 향후 연산 자원이 확보되면 시드 수를 N=10 이상으로 늘려 검정력(Power)을 확보할 필요가 있습니다.
 
 ---
@@ -176,7 +176,7 @@ graph TD
    * **Survival Map의 당위성 증명**: 제안하는 물리적 사전지식(Survival Map) 기반의 Gate의 우수성을 입증하기 위해, 필수 대조군으로서 **1) Random Gate** (주파수 대역에 무작위로 에너지를 가중) 및 **2) Uniform Allocation** (에너지를 모든 대역에 획일적으로 재분배)를 설정하여 동일한 에너지(왜곡) 하에서의 Exact-Match 생존율 차이를 분석합니다. (구현 완료: GPU 서버 환경에서 `--map_type random`, `--map_type uniform` 인자로 다중 시드 평가 진행 예정)
    * **Energy Projection 제어방식 (Equal vs Cap)**: L2 정규화 시, 베이스라인과 완벽히 동일한 에너지를 강제하는 `Equal` 모드와, 에너지 상한선만 제한하여 왜곡을 최소화하는 `Cap` 모드의 비교 실험을 통해 강건성과 음질(Distortion) 간의 Trade-off를 심층 분석합니다.
 3. **공격 시나리오의 다차원성 (Diverse Attack Protocols)**
-   * 백색 잡음(Noise), 필터링(Low/Band-pass), 리샘플링과 같은 **선형(Linear) 신호 왜곡**과 MP3 압축 및 최신 뉴럴 코덱(EnCodec, FACodec)과 같은 **비선형(Non-linear) 양자화 파괴**를 평가합니다.
+   * 백색 잡음(Noise), 필터링(Low/Band-pass), 리샘플링과 같은 **선형(Linear) 신호 왜곡**과 MP3 압축 및 최신 뉴럴 코덱(실제 EnCodec, FACodec)과 같은 **비선형(Non-linear) 양자화 파괴**를 평가합니다.
    * **Temporal Defense 입증 (2606.11828 Benchmarking)**: 이에 더해, 오디오 워터마킹에서 가장 가혹한 공격인 시간축(Temporal) 동기화 파괴에 대한 강건성을 증명하기 위해, 기존 논문(AudioSeal 등)에서 사용된 `masking`, `replacement`, `frame_shuffle` 기법을 파이프라인에 추가 구현하여 적용했습니다. 이를 통해 모델의 정렬(Alignment) 능력 및 실전 강건성을 철저히 검증합니다.
 
 ### 8.7. 실험 파라미터 및 재현 조건 상세 (Detailed Experimental Setup)
@@ -218,7 +218,7 @@ graph TD
 | **주파수 방어** | `filtering` | `lowpass`, `bandpass` (+ `noise`, `resample`) | 동일 (+ 기본 신호처리 방어 추가) |
 | **압축 방어** | `compression` (MP3 등) | `spectral_proxy` | 미분 불가능한 MP3 대신 스펙트럼 기반 프록시 사용 |
 | **코덱 방어** | `reconstruction` (SpeechTokenizer+Vocos) | `reconstruct_nq6` (SpeechTokenizer 기반) | 훈련 루프 내 미분/연산 최적화를 위해 초경량 프록시 사용 |
-| **최종 평가(Test)** | **In-domain Test** (학습 때 사용한 EnCodec을 실전 평가에도 그대로 사용) | **Cross-Codec Held-out Test** (학습 때 본 적 없는 FACodec, ClearerVoice, MP3로 평가) | 원본 논문은 '맞아본 매(SpeechTokenizer 프록시)'를 테스트했다면, 본 연구는 프록시로만 학습한 뒤 **'처음 보는 매(아키텍처가 전혀 다른 FACodec, ClearerVoice)'를 방어해내는 한 차원 높은 일반화 능력**을 증명함. |
+| **최종 평가(Test)** | **In-domain Test** (학습 때 사용한 EnCodec을 실전 평가에도 그대로 사용) | **Cross-Codec Held-out Test** (학습 때 본 적 없는 FACodec, ClearerVoice, MP3로 평가) | 원본 논문은 '맞아본 매(EnCodec)'를 테스트했다면, 본 연구는 프록시로만 학습한 뒤 **'처음 보는 매(아키텍처가 전혀 다른 FACodec, ClearerVoice)'를 방어해내는 한 차원 높은 일반화 능력**을 증명함. |
 
 
 #### C. 타 도메인 확장성 평가 (VCTK, LJSpeech)

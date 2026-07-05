@@ -44,10 +44,10 @@ Post-Hoc Power (to detect 15.0%p diff at N=300): 96.4%
 
 SUCCESS (EQUIVALENCE): We reject the null hypothesis of non-equivalence (p_tost < 0.05).
    The success rates are statistically equivalent within a �15%p margin.
-   This provides evidence of value-independence in the EnCodec neural channel.
+   This provides evidence of value-independence in the SpeechTokenizer-based neural proxy channel.
 
 [Limitations Note]
 1. Power: N=300 provides sufficient statistical power to detect a 15%p difference via TOST.
-2. Scope: This verification uses a single audio file (example.wav) on the EnCodec channel.
+2. Scope: This verification uses a single audio file (example.wav) on the SpeechTokenizer-based proxy channel.
    Value-independence is confirmed for this specific neural codec channel and sample,
    and practically adopted as an unbiased estimator for our held-out attack evaluations.
