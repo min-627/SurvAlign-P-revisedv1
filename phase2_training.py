@@ -751,7 +751,7 @@ def main():
     parser.add_argument("--survival_quantile", type=float, default=0.25)
     parser.add_argument("--survival_attacks", default="reconstruct_nq6,reconstruct_nq8,spectral_proxy")
     parser.add_argument("--utility_attacks", default="reconstruct_nq6,strong_speechtokenizer")
-    parser.add_argument("--train_attacks", default="noise,lowpass,resample,bandpass")
+    parser.add_argument("--train_attacks", default="noise,lowpass,resample,reconstruct_nq6,spectral_proxy,masking,replacement,frame_shuffle")
     parser.add_argument("--validation_attacks", default="bandpass,reconstruct_nq8")
     parser.add_argument("--test_attacks", default="clean,strong_speechtokenizer")
     parser.add_argument("--clearervoice_command", default="")

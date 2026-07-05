@@ -29,5 +29,15 @@ python phase1_attribution.py   --dataset_type librispeech   --dataset_name train
 \
 ### 4. Phase 2 - Gate Training & Evaluation
 \\ash
-python phase2_training.py   --mode proposed_gate   --map_type survival   --dataset_type librispeech   --dataset_name train-clean-100   --epochs 5   --projection_mode equal   --train_attacks noise,lowpass,resample,reconstruct_nq6   --validation_attacks bandpass,reconstruct_nq8   --test_attacks ffmpeg_mp3   --strict_heldout
+python phase2_training.py \
+  --mode proposed_gate \
+  --map_type survival \
+  --dataset_type librispeech \
+  --dataset_name train-clean-100 \
+  --epochs 5 \
+  --projection_mode equal \
+  --train_attacks noise,lowpass,resample,reconstruct_nq6,spectral_proxy,masking,replacement,frame_shuffle \
+  --validation_attacks bandpass,reconstruct_nq8 \
+  --test_attacks ffmpeg_mp3 \
+  --strict_heldout
 \
