@@ -249,7 +249,103 @@ graph TD
 ### Step 6. 절제 연구 및 도메인 확장 (Ablations & Generalizations)
 *   **목적**: 특정 조건에서의 오버피팅을 반박하고 방법론의 범용성을 입증합니다.
 *   **스크립트**:
-    *   python phase2_training.py --map_type random (Random Gate 대조군)
     *   python phase2_training.py --map_type uniform (Uniform Allocation 대조군)
     *   (추가 데이터셋 인자 --dataset_type vctk 등을 통한 확장 실험 수행)
 *   **해석**: "무작정 에너지를 분배한 것(Random/Uniform)보다 물리적 지식을 활용한 것(Survival)이 압도적으로 우수하다"는 결론을 내리며 프레임워크의 학술적 타당성을 종결짓습니다.
+
+---
+
+## 11. SurvAlign-P 최종 논문 구조 및 실행 매핑 (Paper Structure & Execution Mapping)
+
+본 섹션은 논문의 실제 집필 구조(목차)와, 이를 뒷받침하기 위해 수행된(혹은 수행할) 스크립트 실행 순서, 그리고 본 Research Master 문서의 대응 섹션을 매핑한 가이드입니다.
+
+### [전체 실행 스크립트 순서 (Execution Sequence)]
+
+논문 작성을 위해 순차적으로 실행해야 하는 스크립트 파이프라인입니다. (CPU/GPU 환경 무관)
+
+1. **[완료/CPU] ECC Value-Independence 통계적 검증 (3.3절 대응)**
+   *   **목적**: 신경망 코덱 채널의 오류가 비트 값(0/1)에 독립적임을 검증.
+   *   **스크립트**: `python verify_ecc_value_independence.py`
+   *   **결과**: N=300 통계 검정 완료 (p=0.0026 확보)
+2. **[완료/CPU] Clean-Audio 탐지 특이성 및 위양성률 검증 (10.3절 및 Appendix E 대응)**
+   *   **목적**: 워터마크가 없는 콘텐츠 유입 시의 탐지 능력(Logit Margin/Entropy vs Frame Logits) 비교 및 Threshold 산출.
+   *   **스크립트**: `python verify_detection_specificity.py`
+   *   **결과**: Logit Margin AUC 0.996 확보 완료 및 결과 JSON 저장됨 (`results/detection_specificity.json`)
+3. **[대기/GPU] 메인 유의성 검정 및 Paired t-test (6.1절 및 6.2절 대응)**
+   *   **목적**: 제안 방법론의 Held-out 성능(ffmpeg_mp3) 개선 폭을 3개 시드로 평균/표준편차/p-value 도출. (Train/Validation 누출 버그 수정 완료본)
+   *   **스크립트**: `python verify_main_results_significance.py`
+   *   **결과**: 학습 및 평가 완료 후 `results/main_results_significance.json` 생성.
+4. **[대기/GPU] 절제 연구 (Ablation Studies) - Random/Uniform 대조군 (7.1절 대응)**
+   *   **목적**: 물리적 사전지식(Survival Map)의 우수성을 단순 재배치(Random/Uniform)와 비교.
+   *   **스크립트**:
+       *   `python verify_main_results_significance.py --map_type random --output_json results/ablation_random.json`
+       *   `python verify_main_results_significance.py --map_type uniform --output_json results/ablation_uniform.json`
+5. **[대기/GPU] 확장 강건성 평가 (Appendix C 대응)**
+   *   **목적**: 메인 평가 후, 저장된 모델을 바탕으로 외부 최신 코덱(FACodec 등)에 대한 일반화 방어력 검증.
+   *   **스크립트**: `run_extended_heldout_eval.bat` (내부적으로 `verify_extended_heldout_robustness.py` 호출)
+6. **[대기/GPU] 다도메인 확장성 평가 (8.1절, 8.2절 대응)**
+   *   **목적**: 타 데이터셋(VCTK, LJSpeech)에서의 동작 확인.
+   *   **스크립트**:
+       *   `python phase2_training.py --dataset_type vctk`
+       *   `python phase2_training.py --dataset_type ljspeech`
+
+---
+
+### [최종 논문 목차 및 Research Master 매핑]
+
+**Title**: SurvAlign-P: Post-hoc Survival-Aware Residual Redistribution for Exact-Match Robust Audio Watermarking
+
+**1. Introduction**
+*   **논리 흐름**: 딥페이크 추적의 실무 요구 → Bit accuracy vs Exact-match 괴리 제기 → ECC 비교 부재 지적 → 기여 요약 (방법론, 이론, 평가 체계).
+*   **RM 대응 섹션**: 1. 배경 및 문제 정의, 2. 기존 연구의 한계 (Bit Accuracy의 착시)
+
+**2. Related Work**
+*   **논리 흐름**: 신경망 기반 워터마킹 (AlignMark 등) → ECC 이론 → Detection vs Decoding 이분화 선행연구. 방법론보다 평가 엄밀성을 기여로 포지셔닝.
+*   **RM 대응 섹션**: 3. 본 연구의 차별점
+
+**3. Problem Formulation & Theoretical Analysis**
+*   **논리 흐름**: Exact-match 정식화 → FAR Union Bound 증명 → ECC Value-independence 실증.
+*   **RM 대응 섹션**: 4. 방법론 (1) 이론적 전제 검증, 8.2절 Union Bound FAR
+*   **실행 스크립트**: `python verify_ecc_value_independence.py` (Step 1 완료)
+
+**4. Method: SurvAlign-P**
+*   **논리 흐름**: Post-hoc 제약 선언 → 물리적 Survival Map 생성 → 미분 가능 Gate 학습 및 L2 Energy Equal Projection → 연산 오버헤드.
+*   **RM 대응 섹션**: 5. 방법론 (2) SurvAlign-P 프레임워크 설계
+
+**5. Experimental Setup**
+*   **논리 흐름**: 데이터셋 → 베이스라인 → 공격 프로토콜 (Train/Val 누출 제거 완료) → 평가지표 → 다중 시드(42, 43, 44) 설계.
+*   **RM 대응 섹션**: 6. 평가 지표 및 방법론, 8.1절 통계적 유의성 검정
+
+**6. Main Results**
+*   **논리 흐름**: Held-out 강건성(Table I) → Paired t-test(평균/표준편차, 효과크기) → 지각적 품질 유지.
+*   **RM 대응 섹션**: 8.1절 통계적 유의성 검정
+*   **실행 스크립트**: `python verify_main_results_significance.py` (Step 3 대기)
+
+**7. Ablation Studies**
+*   **논리 흐름**: Survival vs Random vs Uniform → Equal vs Cap mode → Analytic Survival MAE.
+*   **RM 대응 섹션**: 8.6절 실험 설계의 포괄성 및 절제 연구
+*   **실행 스크립트**: Random/Uniform 대조군 스크립트 (Step 4 대기)
+
+**8. Generalization**
+*   **논리 흐름**: VCTK (다화자) / LJSpeech (단일장문) → 도메인 독립성 검증.
+*   **RM 대응 섹션**: 8.6절 데이터셋 다양성
+*   **실행 스크립트**: `phase2_training.py` 다도메인 평가 (Step 6 대기)
+
+**9. Discussion**
+*   **논리 흐름**: 물리적 Prior의 이점 → ECC 대비 payload 보존 의의 → Post-hoc 재배포 용이성.
+*   **RM 대응 섹션**: 7. 기대 효과 및 결론
+
+**10. Threat Model & Limitations**
+*   **논리 흐름**: Black-box attacker 모델 → White-box 공격 한계 명시 → Clean-audio False Positive Threat (Compound FAR 재계산) 완결성 부여.
+*   **RM 대응 섹션**: 8.4절 Black-box 위협 모델과 한계점 (False Positive Threat 및 Compound FAR)
+
+**11. Conclusion**
+*   **논리 흐름**: 기여 및 향후 연구 요약.
+
+**Appendix**
+*   A. FAR 외삽 상세 (Union Bound 유도)
+*   B. ECC Value-Independence 상세 (수행된 TOST, Fisher's exact test)
+*   C. 확장 Held-out 결과 (FACodec, ClearerVoice 등) → `run_extended_heldout_eval.bat` (Step 5 대기)
+*   D. 재현 조건 (하이퍼파라미터 등)
+*   E. Clean-Audio Detection/Specificity 분석 (Logit Margin vs frame_logits 비교) → `python verify_detection_specificity.py` (Step 2 완료)
+*   F. MOS/ABX 청취 평가 (미착수)
