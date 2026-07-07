@@ -193,7 +193,7 @@ graph TD
 *   **목적**: SpeechTokenizer 기반 재구성 프록시 채널의 에러가 특정 워터마크 비트 값에 종속되지 않음을 통계적으로 증명.
 *   **데이터셋**: 통제된 단일 오디오 샘플(`example.wav`)
 *   **시뮬레이션 규모**: 300회의 독립적인 워터마크 삽입 및 공격 사이클($N=300$)
-*   **공격(Attack) 채널**: EnCodec (`reconstruct_nq6` 모드) 
+*   **공격(Attack) 채널**: SpeechTokenizer 기반 프록시 (`speechtokenizer_nq6` 모드) 
 *   **비교군**: 
     1) Uniform 16-bit Space (전체 $2^{16}$ 공간에서 균등 추출)
     2) ECC Subspace (Nordstrom-Robinson 기반의 256개 유효 코드워드 공간)
