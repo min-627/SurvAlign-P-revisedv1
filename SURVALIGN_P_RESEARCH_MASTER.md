@@ -173,7 +173,14 @@ graph TD
    * 메인 실험에 사용된 **LibriSpeech (`train-clean-100`)**는 낭독체 음성 위주의 대규모 데이터셋입니다. 
    * 본 연구는 이에 그치지 않고, 다양한 억양과 화자 특성을 포함하는 **VCTK**, 그리고 단일 화자의 장문 발화에 집중된 **LJSpeech** 데이터셋으로의 확장을 실험 설계에 포함하여, 제안하는 물리적 에너지 재배치 구조가 특정 도메인에 종속되지 않고 범용적으로 작용함을 증명하는 로드맵을 구축했습니다.
 2. **핵심 절제 연구 (Ablation Studies)**
-   * **Survival Map의 당위성 증명**: 제안하는 물리적 사전지식(Survival Map) 기반의 Gate의 우수성을 입증하기 위해, 필수 대조군으로서 **1) Random Gate** (주파수 대역에 무작위로 에너지를 가중) 및 **2) Uniform Allocation** (에너지를 모든 대역에 획일적으로 재분배)를 설정하여 동일한 에너지(왜곡) 하에서의 Exact-Match 생존율 차이를 분석합니다. (구현 완료: GPU 서버 환경에서 `--mode random_gate`, `--mode constant_gate` 인자로 다중 시드 평가 진행 예정)
+   * **Survival Map의 당위성 증명**: 제안하는 물리적 사전지식(Survival Map) 기반의 Gate의 우수성을 입증하기 위해 다음과 같은 포괄적인 대조군을 설정하여 평가합니다:
+     * **Random Gate / Constant Gate (`--mode random_gate`, `--mode constant_gate`)**: 주파수 대역에 무작위로 에너지를 가중하거나 획일적으로 재분배하는 기초 대조군입니다. Map 정보 자체의 필요성을 검증합니다.
+     * **Shuffled Survival Gate (`--mode shuffled_survival`)**: Survival Map의 공간적(Spatial) 구조 분포가 실제로 중요한지 검증합니다.
+     * **Energy Gate (`--mode energy_gate`)**: 복잡한 코덱 공격 시뮬레이션(Survival Map) 대신 단순한 오디오 로컬 에너지 분포만으로도 충분한지 묻는 핵심 방어선입니다. 본 연구의 방법론이 갖는 복잡성을 감수할 가치가 있는지 입증합니다.
+     * **Analytic Survival Gate (`--mode analytic_survival`)**: 학습 가능한 파라미터 없이 순수하게 물리적 수식(Survival Map)만으로 에너지를 통제하는 대조군입니다.
+     * **Codec-Utility Gate (`--map_type codec_utility`)**: 순수 물리적 사전지식 대신 디코더 종속적인 프록시 정보를 사용했을 때의 차이를 분석합니다.
+   * **에너지 재배치 주장의 방어선 (Energy Budget)**:
+     * **Uniform Upper Bound (`--mode uniform_upper`)**: 고의로 에너지 예산 규칙을 위반하여 신호 전체를 1.1배 균일하게 증폭시키는 상한선 참고용(Upper-bound) 실험입니다. "굳이 똑똑하게 재배치할 필요 없이 에너지를 더 쓰면 되는 것 아닌가?"라는 잠재적 비판을 방어하며, 에너지를 증가시킨 것이 아니라 '영리하게 재배치'했다는 핵심 주장을 지지합니다.
    * **Energy Projection 제어방식 (Equal vs Cap)**: L2 정규화 시, 베이스라인과 완벽히 동일한 에너지를 강제하는 `Equal` 모드와, 에너지 상한선만 제한하여 왜곡을 최소화하는 `Cap` 모드의 비교 실험을 통해 강건성과 음질(Distortion) 간의 Trade-off를 심층 분석합니다.
 3. **공격 시나리오의 다차원성 (Diverse Attack Protocols)**
    * 백색 잡음(Noise), 필터링(Low/Band-pass), 리샘플링과 같은 **선형(Linear) 신호 왜곡**과 MP3 압축 및 최신 뉴럴 코덱(실제 EnCodec, FACodec)과 같은 **비선형(Non-linear) 양자화 파괴**를 평가합니다.
