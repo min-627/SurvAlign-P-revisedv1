@@ -294,7 +294,7 @@ graph TD
 
 논문 작성을 위해 순차적으로 실행해야 하는 스크립트 파이프라인입니다. (CPU/GPU 환경 무관)
 
-1. **[완료/CPU] ECC Value-Independence 통계적 검증 (3.3절 대응)**
+1. **[완료/CPU] ECC Value-Independence 통계적 검증 (3.2절 대응)**
    *   **목적**: 신경망 코덱 채널의 오류가 비트 값(0/1)에 독립적임을 검증.
    *   **스크립트**: `python verify_ecc_value_independence.py`
    *   **결과**: N=300 통계 검정 완료 (p=0.0026 확보)
@@ -320,62 +320,91 @@ graph TD
 
 ---
 
-### [최종 논문 목차 및 Research Master 매핑]
+### [최종 논문 목차 및 Research Master 매핑 (상세 보강본)]
 
 **Title**: SurvAlign-P: Post-hoc Survival-Aware Residual Redistribution for Exact-Match Robust Audio Watermarking
 
 **1. Introduction**
-*   **논리 흐름**: 딥페이크 추적의 실무 요구 → Bit accuracy vs Exact-match 괴리 제기 → ECC 비교 부재 지적 → 기여 요약 (방법론, 이론, 평가 체계).
+*   **논리 흐름**: 딥페이크 추적의 실무 요구 → Bit accuracy vs Exact-match 괴리 제기 → ECC 비교 부재 지적 → 기여 요약
 *   **RM 대응 섹션**: 1. 배경 및 문제 정의, 2. 기존 연구의 한계 (Bit Accuracy의 착시)
+> **상세 설명**: 이 섹션의 설득력은 "문제가 실무적으로 중요하다"는 것과 "그 문제가 수학적으로 실재한다"는 것을 순서대로 보여주는 데 있습니다. 딥페이크 추적처럼 구체적 응용을 먼저 제시해야, 뒤이어 나오는 $0.95^{16}\approx44\%$ 계산이 "그래서 실제로 무슨 일이 벌어지느냐"는 질문에 답하는 형태로 읽힙니다. 2절의 "비판 1(경험적 임계값)"과 "비판 2(ECC 비교 부재)"가 정확히 이 절의 뼈대이며, 4번째 기여(평가 체계의 엄밀성)는 8장 전체(Additional Validations)의 존재 이유를 미리 요약해주는 역할을 합니다.
 
 **2. Related Work**
-*   **논리 흐름**: 신경망 기반 워터마킹 (AlignMark 등) → ECC 이론 → Detection vs Decoding 이분화 선행연구. 방법론보다 평가 엄밀성을 기여로 포지셔닝.
+*   **논리 흐름**: 신경망 기반 워터마킹 → ECC 이론 → Detection vs Decoding 이분화 선행연구 → 평가 엄밀성 포지셔닝
 *   **RM 대응 섹션**: 3. 본 연구의 차별점
+> **상세 설명**: 이 절이 "우리가 새 방법을 발명했다"가 아니라 "우리가 평가를 더 엄밀하게 했다"고 스스로 포지셔닝하는 게 핵심입니다. 이렇게 겸손하게 스코프를 좁혀두면, 리뷰어가 방법론 자체의 참신성(novelty)을 과도하게 기대하지 않고, 대신 통계적 엄밀함(TOST, union bound, paired t-test)을 이 논문의 진짜 기여로 평가하게 됩니다. Detection vs Decoding 이분화 선행연구는 Clean-audio 오탐(Appendix E)의 정당성을 미리 깔아주는 역할도 합니다.
 
 **3. Problem Formulation & Theoretical Analysis**
-*   **논리 흐름**: Exact-match 정식화 → FAR Union Bound 증명 → ECC Value-independence 실증.
-*   **RM 대응 섹션**: 4. 방법론 (1) 이론적 전제 검증, 8.2절 Union Bound FAR
-*   **실행 스크립트**: `python verify_ecc_value_independence.py` (Step 1 완료)
+*   **논리 흐름**: Exact-match 정식화 → FAR Union Bound 증명 → ECC Value-independence 실증
+*   **RM 대응 섹션**: 3.1절(Analytic Survival Rate, FAR 상한 보장), 3.2절(ECC 한계 극복 및 채널 독립성 실증)
+*   **실행 스크립트**: `python verify_ecc_value_independence.py` (완료 - seed=999 재현 검증까지 완료)
+> **상세 설명**: 이 섹션은 이 논문에서 유일하게 "실험 없이 순수 수학으로" 완결되는 부분(3.1절)과 "수학적 전제를 실험으로 뒷받침해야 하는" 부분(3.2절)이 섞여 있다는 걸 명확히 구분해서 써야 합니다. 3.1절의 union bound는 재현이 필요 없는 결정론적 계산이라 안전하지만, 3.2절(ECC 비교의 공정성)은 "코덱 오류가 비트값에 독립적이다"라는 경험적 전제가 필요해서, 이걸 TOST로 검증한 게 바로 실행 완료된 스크립트입니다. 이 둘의 인식론적 지위가 다르다는 걸 논문에서도 구분해서 서술하시는 게 좋습니다.
 
 **4. Method: SurvAlign-P**
-*   **논리 흐름**: Post-hoc 제약 선언 → 물리적 Survival Map 생성 → 미분 가능 Gate 학습 및 L2 Energy Equal Projection → 연산 오버헤드.
-*   **RM 대응 섹션**: 5. 방법론 (2) SurvAlign-P 프레임워크 설계
+*   **논리 흐름**: Post-hoc 제약 선언 → Survival Map 생성 → 미분 가능 Gate 학습 및 L2 Energy Equal Projection → 연산 오버헤드
+*   **RM 대응 섹션**: 4. 아키텍처 및 논리적 흐름, 5. Phase별 학습 내용 및 입출력 차원, 8.3절 연산 오버헤드
+> **상세 설명**: "Post-hoc 제약"을 가장 먼저 선언하는 순서가 중요합니다. 이후 나오는 모든 설계 결정(Survival Map이 decoder-free인 것, Gate가 residual에만 곱해지는 것)이 전부 이 제약("기존 AlignMark를 재학습하지 않는다") 안에서 나온 파생 결정이라는 걸 독자가 먼저 알아야, 왜 이렇게 설계했는지가 자연스럽게 이해됩니다. 5장의 Phase 1/Phase 2 역할 분리(진단 vs 학습)를 method 섹션의 하위 구조로 그대로 가져오시면 됩니다.
 
 **5. Experimental Setup**
-*   **논리 흐름**: 데이터셋 → 베이스라인 → 공격 프로토콜 (Train/Val 누출 제거 완료) → 평가지표 → 다중 시드(42, 43, 44) 설계.
-*   **RM 대응 섹션**: 6. 평가 지표 및 방법론, 8.1절 통계적 유의성 검정
+*   **논리 흐름**: 데이터셋 → 베이스라인 → 공격 프로토콜(Train/Val 누출 제거 완료) → 평가지표 → 다중 시드(42, 43, 44) 설계
+*   **RM 대응 섹션**: 6. 평가 지표 및 방법론, 8.1절 통계적 유의성 검정 설계, 8.7절 실험 파라미터 상세
+> **상세 설명**: "Train/Val 누출 제거 완료"라고 명시하신 부분은 실제로 지난 점검에서 발견하고 수정을 확인한 버그(bandpass가 train/validation 양쪽에 겹쳐 있던 것)를 가리키는 것이라 정확한 서술입니다. 이 절에서는 특히 8.7절에 있는 정확한 하이퍼파라미터(5 epoch, batch 8, LR 1e-4, `equal` projection mode)를 표로 그대로 옮기시고, "held-out test attack은 학습·검증 어디에도 없던 `ffmpeg_mp3` 하나"라는 걸 강조하셔야 오버피팅 방지 논리가 완성됩니다.
 
 **6. Main Results**
-*   **논리 흐름**: Held-out 강건성(Table I) → Paired t-test(평균/표준편차, 효과크기) → 지각적 품질 유지.
+*   **논리 흐름**: Held-out 강건성(Table I) → Paired t-test(평균/표준편차, 효과크기) → 지각적 품질 유지
 *   **RM 대응 섹션**: 8.1절 통계적 유의성 검정
-*   **실행 스크립트**: `run_all_experiments.bat`의 Baseline vs Proposed 결과 (Step 3 대기), `python verify_main_results_significance.py` (Step 4 대기)
+*   **실행 스크립트**: `run_all_experiments.bat`의 Baseline vs Proposed 비교 (Step 3 대기), `python verify_main_results_significance.py` (Step 4 대기)
+> **상세 설명**: 이 섹션이 이 논문 전체의 심장입니다. 지금까지 확인된 단일 시드(seed 42) 예비 결과는 방향성 자체는 고무적이지만, "통계적으로 유의미하다"는 8.1절의 핵심 주장을 완성하려면 seed 43, 44가 마저 실행되어 paired t-test가 나와야 합니다. 이 섹션은 지금 이 논문에서 유일하게 실행 결과가 완전히 채워지지 않은 곳이며, 나머지 모든 섹션(3, 7, 9, 10)은 사실상 이 섹션 하나를 정당화하거나 보강하기 위해 존재한다고 봐도 됩니다.
 
 **7. Ablation Studies**
-*   **논리 흐름**: 7종 대조군(Random, Constant, Shuffled, Energy, Analytic, Codec-utility, Uniform) 비교 분석.
+*   **논리 흐름**: 7종 대조군(Random, Constant, Shuffled, Energy, Analytic, Codec-utility, Uniform) 비교 분석
 *   **RM 대응 섹션**: 8.6절 실험 설계의 포괄성 및 절제 연구
-*   **실행 스크립트**: `run_all_experiments.bat` 전체 실행을 통한 7종 대조군 성능 확보 (Step 3 대기)
+*   **실행 스크립트**: `run_all_experiments.bat` 전체 실행 (9-step) (Step 3 대기)
+> **상세 설명**: 7종(실제로는 baseline·proposed 재확인 포함 총 9-step)이 각각 답하는 질문이 다르다는 걸 서술에 명시하시면 좋습니다. 특히 Uniform(에너지 예산 위반 상한)은 "재배치가 아니라 그냥 에너지를 늘려서 이긴 것 아니냐"는 질문을, Energy gate(단순 로컬 에너지 마스킹)는 "복잡한 코덱-공격 시뮬레이션 기반 Survival Map이 정말 필요하냐"는 질문을 각각 방어합니다. 이 두 개가 빠지면 리뷰어가 정확히 이 두 지점을 공격할 수 있다는 걸 이미 확인했으니, 표에 반드시 다 포함하세요.
 
 **8. Generalization**
-*   **논리 흐름**: VCTK (다화자) / LJSpeech (단일장문) → 도메인 독립성 검증.
-*   **RM 대응 섹션**: 8.6절 데이터셋 다양성
-*   **실행 스크립트**: `phase2_training.py` 다도메인 평가 (Step 6 대기)
+*   **논리 흐름**: VCTK(다화자) / LJSpeech(단일 장문) → 도메인 독립성 검증
+*   **RM 대응 섹션**: 8.6절 데이터셋 다양성 하위 항목
+*   **실행 스크립트**: `phase2_training.py --dataset_type vctk/ljspeech` (Step 6 대기)
+> **상세 설명**: 8.6절이 Ablation(7장)과 Generalization(8장) 둘 다를 포괄하는 상위 섹션이라는 점을 유의하세요 — RM 문서 자체에서 "1. 데이터셋 다양성"과 "2. 핵심 절제 연구"가 같은 8.6절의 하위 항목으로 나란히 있습니다. 논문에서는 이 둘을 별개 장(7장, 8장)으로 쪼개는 게 맞지만, RM 문서 참조 시에는 같은 섹션 번호를 공유한다는 걸 인지하고 계셔야 나중에 헷갈리지 않습니다.
 
 **9. Discussion**
-*   **논리 흐름**: 물리적 Prior의 이점 → ECC 대비 payload 보존 의의 → Post-hoc 재배포 용이성.
-*   **RM 대응 섹션**: 7. 기대 효과 및 결론
+*   **논리 흐름**: 물리적 Prior의 이점 → ECC 대비 payload 보존 의의 → Post-hoc 재배포 용이성
+*   **RM 대응 섹션**: 7. 기대 효과 및 결론 (결론적 성격의 서술과 연결)
+> **상세 설명**: 이 섹션은 4~8장의 실증 결과를 "왜 그런 결과가 나왔는지"라는 해석 층위로 승격시키는 자리입니다. 특히 "물리적 prior가 gradient saliency보다 유리한 이유"는, 4장에서 이미 다룬 decoder-free 설계 철학과 7장 ablation(analytic_survival, 즉 학습 없는 순수 prior)의 결과를 연결지어 설명할 좋은 기회입니다.
 
 **10. Threat Model & Limitations**
-*   **논리 흐름**: Black-box attacker 모델 → White-box 공격 한계 명시 → Clean-audio False Positive Threat (Compound FAR 재계산) 완결성 부여.
-*   **RM 대응 섹션**: 8.4절 Black-box 위협 모델과 한계점 (False Positive Threat 및 Compound FAR)
-*   **실행 스크립트**: `python verify_detection_specificity.py` (Step 2 완료)
+*   **논리 흐름**: Black-box attacker 모델 → White-box 공격 한계 명시 → Clean-audio False Positive Threat(Compound FAR 재계산)로 완결성 부여
+*   **RM 대응 섹션**: 8.4절 보안 위협 모델
+*   **실행 스크립트**: `python verify_detection_specificity.py` (완료 - ROC-AUC 실측 완료, 3종 신호 비교 완료)
+> **상세 설명**: 이 섹션은 이미 실행이 끝난 두 축(black-box 위협모델 서술 + clean-audio 오탐 실증)을 갖고 있어서, 6장(메인 결과)과 별개로 지금 바로 초안을 완성할 수 있는 섹션입니다. Compound FAR(탐지 위양성률 × 조건부 매칭 오류율)가 3.1절의 union bound와 Appendix E의 detection AUC를 곱해서 나오는 값이라는 것도 명시하시면, 이 논문의 위협 모델이 "워터마크 있는 오디오의 오탐"과 "워터마크 없는 오디오의 오탐"을 모두 커버한다는 완결성이 드러납니다.
 
 **11. Conclusion**
-*   **논리 흐름**: 기여 및 향후 연구 요약.
+*   **논리 흐름**: 기여 및 향후 연구 요약
+> **상세 설명**: 3줄 요약 + future work(64bit 실증, white-box adaptive attacker, 타 워터마킹 모델 이식) 구조를 유지하시면 됩니다.
 
-**Appendix**
-*   A. FAR 외삽 상세 (Union Bound 유도)
-*   B. ECC Value-Independence 상세 (수행된 TOST, Fisher's exact test)
-*   C. 확장 Held-out 결과 (실제 EnCodec, FACodec, ClearerVoice 등) → `run_extended_heldout_eval.bat` (Step 5 대기)
-*   D. 재현 조건 (하이퍼파라미터 등)
-*   E. Clean-Audio Detection/Specificity 분석 (Logit Margin vs frame_logits 비교)
-*   F. MOS/ABX 청취 평가 (미착수)
+---
+
+### [Appendix]
+
+| 항목 | 내용 | 상태 |
+|---|---|---|
+| **A** | FAR 외삽 상세 (Union Bound 유도, 3.1절 전체 계산 과정) | ✅ 완료 |
+| **B** | ECC Value-Independence 상세 (TOST, Fisher's exact test, raw count 105/117) | ✅ 완료·재현 검증됨 |
+| **C** | 확장 Held-out 결과 (실제 EnCodec, FACodec, ClearerVoice, DAC, Vocos) | ⏳ **Step 5 대기** — `run_extended_heldout_eval.bat` |
+| **D** | 재현 조건 (하이퍼파라미터, 시드, 체크포인트 명세, 8.7절) | ✅ 서술 가능 (실험 결과 채워지는 대로 갱신) |
+| **E** | Clean-Audio Detection/Specificity (Logit Margin vs frame_logits 비교) | ✅ 완료 — AUC 0.997(margin) vs 0.902(frame_logits) |
+| **F** | MOS/ABX 청취 평가 | ⬜ 미착수, Future Work로 명시 |
+
+---
+
+### [종합 — 실행 우선순위]
+
+| 우선순위 | 대상 | 이유 |
+|---|---|---|
+| 🔴 **1순위** | Step 4 (`verify_main_results_significance.py`, seed 43/44) | 6장 Main Results 완성의 유일한 병목. 나머지 모든 장(9~11)이 이걸 전제로 서술됨 |
+| 🟠 2순위 | Step 3 (`run_all_experiments.bat`) | 7장 Ablation 완성. Uniform·Energy gate가 9장(Discussion)의 해석 근거이기도 함 |
+| 🟡 3순위 | Step 6 (VCTK/LJSpeech) | 8장 Generalization 완성 |
+| 🟢 4순위 | Step 5 (외부 코덱 5종) | Appendix C 완성, 본문 필수는 아니고 방어력 보강용 |
+
+지금 3장(Problem Formulation), 10장(Threat Model), Appendix A/B/E는 **이미 실행이 끝나 바로 초안 작성이 가능한 상태**이고, 6장(Main Results)만 채워지면 1·2·4·5·9·11장까지 연쇄적으로 완성 가능한 구조입니다.
