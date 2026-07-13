@@ -18,7 +18,7 @@ def main():
     device = "cuda" if torch.cuda.is_available() else "cpu"
     
     # Load Vocos encodec model
-    vocos = Vocos.from_pretrained("charactrix/vocos-encodec-24khz").to(device)
+    vocos = Vocos.from_pretrained("charactr/vocos-encodec-24khz").to(device)
 
     try:
         from encodec import EncodecModel

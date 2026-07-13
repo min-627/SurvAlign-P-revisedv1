@@ -50,6 +50,8 @@ from experiment_utils import (
     set_global_seed,
     stable_int_hash,
     overlapping_attack_families,
+    survival_heldout_leakage,
+    HELDOUT_CODECS,
 )
 from phase1_attribution import compute_decoder_gradient_map, compute_decoder_utility_map
 from survalign_p import (
@@ -162,7 +164,7 @@ def apply_eval_attack(wav, attack_name, distorter, seed, args):
     raise ValueError(f"Unknown evaluation attack: {attack_name}")
 
 
-def build_guide_map(args, alignmark, distorter, wav, wav_wm, residual, context_seed):
+def build_guide_map(args, alignmark, distorter, wav, wav_wm, residual, context_seed, precomputed_survival=None):
     spec_clean = stft_audio(wav.squeeze(1), n_fft=256, hop_length=64)
     spec_wm = stft_audio(wav_wm.squeeze(1), n_fft=256, hop_length=64)
     residual_spec = spec_wm - spec_clean
@@ -179,7 +181,7 @@ def build_guide_map(args, alignmark, distorter, wav, wav_wm, residual, context_s
     elif args.mode == "constant_gate":
         guide = torch.ones_like(clean_feature)
     elif args.mode == "shuffled_survival":
-        guide = get_survival_map(
+        guide = precomputed_survival if precomputed_survival is not None else get_survival_map(
             wav,
             wav_wm,
             distorter,
@@ -197,7 +199,7 @@ def build_guide_map(args, alignmark, distorter, wav, wav_wm, residual, context_s
         guide = torch.stack(shuffled, dim=0).reshape_as(guide)
     elif args.mode in {"proposed_gate", "analytic_survival"}:
         if args.map_type == "survival":
-            guide = get_survival_map(
+            guide = precomputed_survival if precomputed_survival is not None else get_survival_map(
                 wav,
                 wav_wm,
                 distorter,
@@ -264,7 +266,7 @@ def build_candidate(args, gate, alignmark, distorter, wav, msg, context_seed):
 
 
 def validation_score(args, gate, alignmark, distorter, dataset_val, device):
-    loader = DataLoader(dataset_val, batch_size=args.batch_size, shuffle=False, num_workers=0)
+    loader = _make_loader(dataset_val, args, shuffle=False)
     gate.eval()
     exact_values, ce_values, bit_values = [], [], []
     baseline_si_sdr, method_si_sdr, l2_ratios, clipping_ratios = [], [], [], []
@@ -307,7 +309,65 @@ def validation_score(args, gate, alignmark, distorter, dataset_val, device):
     }
 
 
-def train_gate(args, device, alignmark, distorter, dataset_train, dataset_val):
+def _make_loader(dataset, args, *, shuffle, generator=None):
+    """DataLoader honoring the 3-B throughput knobs. persistent_workers needs workers>0."""
+    kwargs = dict(
+        batch_size=args.batch_size,
+        shuffle=shuffle,
+        num_workers=args.num_workers,
+        pin_memory=args.pin_memory,
+    )
+    if args.num_workers > 0:
+        kwargs["persistent_workers"] = args.persistent_workers
+    if generator is not None:
+        kwargs["generator"] = generator
+    if shuffle:
+        kwargs["drop_last"] = False
+    return DataLoader(dataset, **kwargs)
+
+
+def precompute_survival_cache(args, alignmark, distorter, dataset, device):
+    """3-A: precompute the (gate-independent) Survival Map once per training sample.
+
+    The Survival Map depends only on (clean, watermarked, attacks) — not on the Gate — so it is
+    constant across epochs and safe to cache. We key by sample_id with an epoch-independent,
+    sample-deterministic seed, which also removes the per-epoch seed drift the live path had.
+    Returns {sample_id: cpu_tensor(F, T)}.
+    """
+    if args.map_type != "survival":
+        raise ValueError("Survival-map caching only applies to --map_type survival.")
+    loader = _make_loader(dataset, args, shuffle=False)
+    cache: Dict[str, torch.Tensor] = {}
+    with torch.no_grad():
+        for batch in tqdm(loader, desc="Precompute Survival Map cache"):
+            wav, msg, metadata = batch
+            wav = wav.to(device)
+            wav_wm, _ = alignmark.embed(wav, msg.to(device))
+            wav_a, wav_wm_a, _ = align_audio_tensors(wav, wav_wm, wav_wm)
+            sample_ids = [str(v) for v in metadata["sample_id"]]
+            for item, sample_id in enumerate(sample_ids):
+                # Sample-deterministic seed => identical map every epoch => cacheable.
+                seed = stable_int_hash(args.seed, "survival_cache", sample_id)
+                guide = get_survival_map(
+                    wav_a[item:item + 1], wav_wm_a[item:item + 1], distorter,
+                    attack_names=args.survival_attack_names, base_seed=seed,
+                    quantile=args.survival_quantile,
+                )
+                cache[sample_id] = guide.squeeze(0).cpu()
+    print(f"[cache] Survival Map cached for {len(cache)} samples.")
+    return cache
+
+
+def _gather_cached_survival(cache, sample_ids, device, dtype):
+    """Stack per-sample cached maps into (B, F, T); None if any id is missing."""
+    try:
+        maps = [cache[str(sample_id)] for sample_id in sample_ids]
+    except KeyError:
+        return None
+    return torch.stack(maps, dim=0).to(device=device, dtype=dtype)
+
+
+def train_gate(args, device, alignmark, distorter, dataset_train, dataset_val, survival_cache=None):
     if not args.train_attack_names:
         raise ValueError("At least one training attack is required")
     unsupported = set(args.train_attack_names) - {
@@ -320,69 +380,84 @@ def train_gate(args, device, alignmark, distorter, dataset_train, dataset_val):
     optimizer = optim.AdamW(gate.parameters(), lr=args.lr, weight_decay=1e-4)
     generator = torch.Generator()
     generator.manual_seed(args.seed)
-    loader = DataLoader(
-        dataset_train,
-        batch_size=args.batch_size,
-        shuffle=True,
-        drop_last=False,
-        num_workers=0,
-        generator=generator,
-    )
+    use_cache = survival_cache is not None
+    # Caching needs sample_ids to key on, so the training loader must return metadata.
+    loader = _make_loader(dataset_train, args, shuffle=True, generator=generator)
     if len(loader) == 0:
         raise ValueError("Empty training loader")
     os.makedirs(args.checkpoint_dir, exist_ok=True)
     checkpoint_path = os.path.join(args.checkpoint_dir, args.checkpoint_name)
     best = {"exact_message_accuracy": -1.0, "ce": float("inf")}
 
+    # 3-C: AMP is opt-in and only active on CUDA. STFT/ISTFT run in fp32 regardless (complex ops
+    # are not autocast-safe); autocast covers the conv/decoder matmuls where Tensor Cores help.
+    amp_enabled = bool(args.amp) and device.type == "cuda"
+    scaler = torch.cuda.amp.GradScaler(enabled=amp_enabled)
+
     for epoch in range(1, args.epochs + 1):
         gate.train()
         losses = []
-        for step, (wav, msg) in enumerate(tqdm(loader, desc=f"Train {epoch}/{args.epochs}")):
+        for step, batch in enumerate(tqdm(loader, desc=f"Train {epoch}/{args.epochs}")):
+            if len(batch) == 3:
+                wav, msg, metadata = batch
+                sample_ids = [str(v) for v in metadata["sample_id"]]
+            else:
+                wav, msg = batch
+                sample_ids = None
             wav, msg = wav.to(device), msg.to(device)
             with torch.no_grad():
                 wav_wm, residual = alignmark.embed(wav, msg)
                 wav, wav_wm, residual = align_audio_tensors(wav, wav_wm, residual)
             args.current_msg = msg
-            feature_pack, residual_spec, guide, masking_map = build_guide_map(
-                args,
-                alignmark,
-                distorter,
-                wav,
-                wav_wm,
-                residual,
-                context_seed=args.seed + epoch * 100000 + step,
-            )
+
+            precomputed_survival = None
+            if use_cache and sample_ids is not None:
+                precomputed_survival = _gather_cached_survival(survival_cache, sample_ids, device, wav.dtype)
+
             optimizer.zero_grad(set_to_none=True)
-            gated_spec, scale = gate(feature_pack, residual_spec)
-            gated_residual = istft_audio(gated_spec, length=wav.shape[-1], n_fft=256, hop_length=64)
-            projected = project_residual_l2(
-                gated_residual.unsqueeze(1), residual, mode=args.projection_mode
-            ).squeeze(1)
-            candidate = (wav.squeeze(1) + projected).unsqueeze(1)
-
-            robust_loss = torch.zeros((), device=device)
-            for attack_index, attack in enumerate(args.train_attack_names):
-                attacked = _internal_attack(
-                    candidate, attack, distorter, args.seed + epoch * 1000000 + step * 100 + attack_index
+            with torch.autocast(device_type=device.type, enabled=amp_enabled):
+                feature_pack, residual_spec, guide, masking_map = build_guide_map(
+                    args,
+                    alignmark,
+                    distorter,
+                    wav,
+                    wav_wm,
+                    residual,
+                    context_seed=args.seed + epoch * 100000 + step,
+                    precomputed_survival=precomputed_survival,
                 )
-                _, logits = alignmark.decode_logits_with_grad(attacked)
-                robust_loss = robust_loss + compute_chunk_ce_loss(logits, msg)
-            robust_loss = robust_loss / len(args.train_attack_names)
+                gated_spec, scale = gate(feature_pack, residual_spec)
+                gated_residual = istft_audio(gated_spec, length=wav.shape[-1], n_fft=256, hop_length=64)
+                projected = project_residual_l2(
+                    gated_residual.unsqueeze(1), residual, mode=args.projection_mode
+                ).squeeze(1)
+                candidate = (wav.squeeze(1) + projected).unsqueeze(1)
 
-            deviation_loss = torch.mean((scale - 1.0) ** 2)
-            # Penalize only positive amplification in perceptually exposed (low-energy) bins.
-            exposed_amplification = F.relu(scale - 1.0) * (1.0 - masking_map)
-            masking_loss = torch.mean(exposed_amplification**2)
-            tv_loss = compute_total_variation_loss(scale)
-            total = (
-                robust_loss
-                + args.lambda_dev * deviation_loss
-                + args.lambda_mask * masking_loss
-                + args.lambda_tv * tv_loss
-            )
-            total.backward()
+                robust_loss = torch.zeros((), device=device)
+                for attack_index, attack in enumerate(args.train_attack_names):
+                    attacked = _internal_attack(
+                        candidate, attack, distorter, args.seed + epoch * 1000000 + step * 100 + attack_index
+                    )
+                    _, logits = alignmark.decode_logits_with_grad(attacked)
+                    robust_loss = robust_loss + compute_chunk_ce_loss(logits, msg)
+                robust_loss = robust_loss / len(args.train_attack_names)
+
+                deviation_loss = torch.mean((scale - 1.0) ** 2)
+                # Penalize only positive amplification in perceptually exposed (low-energy) bins.
+                exposed_amplification = F.relu(scale - 1.0) * (1.0 - masking_map)
+                masking_loss = torch.mean(exposed_amplification**2)
+                tv_loss = compute_total_variation_loss(scale)
+                total = (
+                    robust_loss
+                    + args.lambda_dev * deviation_loss
+                    + args.lambda_mask * masking_loss
+                    + args.lambda_tv * tv_loss
+                )
+            scaler.scale(total).backward()
+            scaler.unscale_(optimizer)
             torch.nn.utils.clip_grad_norm_(gate.parameters(), max_norm=5.0)
-            optimizer.step()
+            scaler.step(optimizer)
+            scaler.update()
             losses.append(float(total.item()))
 
         val = validation_score(args, gate, alignmark, distorter, dataset_val, device)
@@ -445,7 +520,7 @@ def _safe_stoi(reference, degraded):
 
 def evaluate(args, device, alignmark, distorter, dataset_test, gate=None, checkpoint_path=""):
     """Evaluate baseline and method on exactly the same samples, messages and attacks."""
-    loader = DataLoader(dataset_test, batch_size=args.batch_size, shuffle=False, num_workers=0)
+    loader = _make_loader(dataset_test, args, shuffle=False)
     if gate is not None:
         gate.eval()
     if not args.test_attack_names:
@@ -764,7 +839,11 @@ def main():
     parser.add_argument("--mp3_bitrate", default="64k")
     parser.add_argument("--test_only", action="store_true")
     parser.add_argument("--strict_heldout", action="store_true",
-                        help="Fail when test attacks overlap map/train/validation attacks.")
+                        help="Fail when test attacks overlap map/train/validation attacks, or when "
+                             "the Survival Map leaks a reserved cross-codec held-out codec.")
+    parser.add_argument("--heldout_codecs", default=",".join(HELDOUT_CODECS),
+                        help="Comma-separated codecs reserved as cross-codec held-out generalization "
+                             "evidence; the Survival Map must never be built from these (incl. proxies).")
     parser.add_argument("--allow_checkpoint_config_mismatch", action="store_true")
     parser.add_argument("--load_weight", default="")
     parser.add_argument("--checkpoint_dir", default="checkpoints")
@@ -774,6 +853,16 @@ def main():
     parser.add_argument("--far_candidate_sizes", default="100,300,600")
     parser.add_argument("--results_dir", default="results/phase2")
     parser.add_argument("--run_id", default="")
+    # --- 3-B/3-C/3-A speed knobs (all default to the previous behavior; measure on GPU) ---
+    parser.add_argument("--num_workers", type=int, default=0, help="DataLoader worker processes (3-B).")
+    parser.add_argument("--pin_memory", action="store_true", help="Pin host memory for faster H2D copies (3-B).")
+    parser.add_argument("--persistent_workers", action="store_true",
+                        help="Keep DataLoader workers alive across epochs; requires --num_workers > 0 (3-B).")
+    parser.add_argument("--amp", action="store_true",
+                        help="Enable CUDA mixed precision for the Gate/decoder path (3-C). No-op on CPU.")
+    parser.add_argument("--cache_survival_map", action="store_true",
+                        help="Precompute the Survival Map once per sample and reuse across epochs (3-A). "
+                             "Only valid for --map_type survival.")
     args = parser.parse_args()
 
     set_global_seed(args.seed)
@@ -804,6 +893,20 @@ def main():
             raise ValueError(message)
         print(f"[WARNING] {message}. These results must not be described as held-out generalization.")
 
+    # 1-A: the Survival Map feeds the Gate's input features, so it must never be built from a
+    # codec that will later be presented as cross-codec held-out evidence (FACodec/ClearerVoice/
+    # DAC/Vocos) — regardless of whether that codec appears in the *current* test set.
+    heldout_codec_list = parse_csv_list(args.heldout_codecs)
+    survival_leaks = survival_heldout_leakage(args.survival_attack_names, heldout_codec_list)
+    if survival_leaks:
+        leak_message = (
+            "Survival-map leakage into reserved held-out codecs: "
+            + "; ".join(f"{codec}<-{attacks}" for codec, attacks in sorted(survival_leaks.items()))
+        )
+        if args.strict_heldout:
+            raise ValueError(leak_message)
+        print(f"[WARNING] {leak_message}. The cross-codec generalization claim (C10) is invalid for this run.")
+
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     alignmark = AlignMarkManager(device, latent_mode=args.latent_mode)
     distorter = DifferentiableDistortion(sr=16000, vae=alignmark.vae).to(device)
@@ -818,6 +921,11 @@ def main():
 
     trainable_modes = {"random_gate", "energy_gate", "constant_gate", "shuffled_survival", "proposed_gate"}
     needs_training_data = args.mode in trainable_modes and not (args.test_only or args.load_weight)
+    mode_uses_survival = args.mode == "shuffled_survival" or (
+        args.mode == "proposed_gate" and args.map_type == "survival"
+    )
+    if args.cache_survival_map and not mode_uses_survival:
+        raise ValueError("--cache_survival_map requires a survival-map mode (proposed_gate/shuffled_survival).")
     train_dataset = None
     val_dataset = None
     if needs_training_data:
@@ -826,7 +934,8 @@ def main():
             dataset_name=args.dataset_name,
             split="train",
             seed=args.seed,
-            return_metadata=False,
+            # Caching keys on sample_id, so the training set must expose metadata.
+            return_metadata=bool(args.cache_survival_map),
             combined_protocol=args.combined_protocol,
         )
         val_dataset = UnifiedSpeechDataset(
@@ -851,7 +960,12 @@ def main():
             state = checkpoint.get("model_state_dict", checkpoint)
             gate.load_state_dict(state, strict=True)
         else:
-            gate, checkpoint_path = train_gate(args, device, alignmark, distorter, train_dataset, val_dataset)
+            survival_cache = None
+            if args.cache_survival_map:
+                survival_cache = precompute_survival_cache(args, alignmark, distorter, train_dataset, device)
+            gate, checkpoint_path = train_gate(
+                args, device, alignmark, distorter, train_dataset, val_dataset, survival_cache=survival_cache
+            )
     evaluate(args, device, alignmark, distorter, test_dataset, gate, checkpoint_path)
 
 

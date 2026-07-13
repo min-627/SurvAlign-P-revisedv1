@@ -34,7 +34,9 @@ def main():
         decoded = model.decode(encoded_frames)[0]
 
     # Save output
-    decoded = decoded.squeeze(0).cpu()
+    # decoded[0]은 이미 (channel=1, time) 형태의 2D 텐서이므로 추가 squeeze는 불필요.
+    # squeeze(0)을 하면 채널 차원(1)까지 지워져 1D가 되어 torchaudio.save가 실패한다.
+    decoded = decoded.cpu()
     torchaudio.save(args.output, decoded, model.sample_rate)
 
 if __name__ == "__main__":

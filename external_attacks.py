@@ -10,10 +10,16 @@ import subprocess
 import tempfile
 
 import numpy as np
-import soundfile as sf
 import torch
 
 from experiment_utils import align_audio_tensors
+
+
+def _soundfile():
+    """Lazily import soundfile so that merely importing this module (e.g. for the
+    asset-free smoke tests) does not require the native libsndfile dependency."""
+    import soundfile as sf
+    return sf
 
 
 def _run_command_template(command_template: str, input_path: str, output_path: str) -> None:
@@ -51,6 +57,7 @@ def command_roundtrip_batch(
         for index, sample in enumerate(wav_2d):
             input_path = os.path.join(temp_dir, f"input_{index}.wav")
             output_path = os.path.join(temp_dir, f"output_{index}.wav")
+            sf = _soundfile()
             sf.write(input_path, sample.detach().cpu().numpy(), sample_rate, subtype="PCM_16")
             _run_command_template(command_template, input_path, output_path)
             output, sr = sf.read(output_path, dtype="float32")
@@ -86,6 +93,7 @@ def ffmpeg_mp3_roundtrip_batch(
             input_path = os.path.join(temp_dir, f"input_{index}.wav")
             mp3_path = os.path.join(temp_dir, f"compressed_{index}.mp3")
             output_path = os.path.join(temp_dir, f"output_{index}.wav")
+            sf = _soundfile()
             sf.write(input_path, sample.detach().cpu().numpy(), sample_rate, subtype="PCM_16")
             subprocess.run(
                 [ffmpeg, "-hide_banner", "-loglevel", "error", "-y", "-i", input_path,

@@ -47,6 +47,50 @@ def attack_family(name: str) -> str:
 def overlapping_attack_families(left: Sequence[str], right: Sequence[str]) -> List[str]:
     return sorted(set(map(attack_family, left)) & set(map(attack_family, right)))
 
+
+# Codecs the paper reserves as cross-codec "held-out" (never exposed during map building or
+# training) generalization evidence. Using any of them — even via a differentiable proxy — to
+# build the Survival Map invalidates the C10 cross-codec generalization claim.
+HELDOUT_CODECS: Tuple[str, ...] = ("facodec", "clearervoice", "dac", "vocos")
+
+
+def heldout_codec_of(name: str) -> Optional[str]:
+    """Return the reserved held-out codec that an attack alias (including proxies) would leak.
+
+    This deliberately looks past the coarse ``attack_family`` mapping: e.g. ``facodec_proxy``
+    maps to the ``speechtokenizer`` family for backbone-similarity purposes, but for held-out
+    accounting it is still evidence about FACodec and must be flagged.
+    """
+    normalized = str(name).strip().lower()
+    if "facodec" in normalized:
+        return "facodec"
+    if "clearervoice" in normalized:
+        return "clearervoice"
+    if normalized == "dac" or normalized.startswith("dac_") or normalized.startswith("dac-"):
+        return "dac"
+    if "vocos" in normalized:
+        return "vocos"
+    if normalized == "encodec" or normalized.startswith("encodec"):
+        return "encodec"
+    return None
+
+
+def survival_heldout_leakage(
+    survival_attacks: Sequence[str],
+    heldout_codecs: Sequence[str] = HELDOUT_CODECS,
+) -> Dict[str, List[str]]:
+    """Map reserved held-out codec -> the survival-map attacks that leak it.
+
+    Returns an empty dict when the Survival Map is safe with respect to the held-out set.
+    """
+    reserved = {c.strip().lower() for c in heldout_codecs}
+    leaks: Dict[str, List[str]] = {}
+    for attack in survival_attacks:
+        codec = heldout_codec_of(attack)
+        if codec is not None and codec in reserved:
+            leaks.setdefault(codec, []).append(attack)
+    return leaks
+
 def set_global_seed(seed: int, deterministic: bool = True) -> None:
     random.seed(seed)
     np.random.seed(seed)
@@ -253,7 +297,7 @@ def compute_attribution_metrics(
     # NR codewords), we empirically verified (see `verify_ecc_value_independence.py`) that the 
     # SpeechTokenizer-based neural proxy channel exhibits practical value-independence over the message subspace 
     # within a ±15%p equivalence margin (TOST p < 0.05). This is not an absolute proof of independence 
-    # for all audio, but within this statistical power (N=100), no value-dependence was found. Therefore, 
+    # for all audio, but within this statistical power (N=300), no value-dependence was found. Therefore,
     # computing `hamming <= 2` over the uniform space serves as a practically valid, unbiased 
     # estimator of the ECC decoding success rate for this evaluation context.
     exact_ecc8 = (hamming <= 2)
