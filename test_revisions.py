@@ -10,6 +10,8 @@ import numpy as np
 import torch
 
 import experiment_utils
+import external_attacks
+import inprocess_attacks
 import phase1_attribution
 import phase2_training
 from experiment_utils import (
@@ -165,11 +167,14 @@ def test_phase1_phase2_share_attack_dispatch():  # refactor: dedup phase1/phase2
     except ValueError:
         pass
 
-    # Missing command args must still raise (facodec/clearervoice/encodec/etc guards preserved).
+    # Missing command args must still raise for adapters with no in-process fallback
+    # (facodec/clearervoice/dac/hifigan). encodec/vocos are exempt: with no override
+    # command they now fall back to the in-process codec path instead of raising
+    # (see test_encodec_vocos_inprocess_dispatch).
     for attack_name, attr in [
         ("facodec", "facodec_command"),
         ("clearervoice", "clearervoice_command"),
-        ("encodec", "encodec_command"),
+        ("dac", "dac_command"),
     ]:
         try:
             apply_eval_attack(wav, attack_name, dist, seed=0, args=_FakeArgs())
@@ -189,6 +194,111 @@ def test_phase1_phase2_share_attack_dispatch():  # refactor: dedup phase1/phase2
     out_via_p1 = phase1_attribution._apply_internal_attack(wav, "noise", dist, seed)
     out_via_p2 = phase2_training._internal_attack(wav, "noise", dist, seed)
     assert torch.equal(out_via_p1, out_via_p2)
+
+
+class _MockEncodecModel:
+    """Identity in/out stand-in for `encodec.EncodecModel`: pins the shape/caching contract
+    without needing the real (unavailable in this environment) `encodec` package."""
+
+    sample_rate = 24000
+    load_count = 0
+
+    def __init__(self):
+        type(self).load_count += 1
+
+    def encode(self, wav):
+        return [(wav, None)]
+
+    def decode(self, encoded_frames):
+        return encoded_frames[0][0]
+
+
+class _MockVocosModel:
+    """Identity in/out stand-in for `vocos.Vocos`."""
+
+    load_count = 0
+
+    def __init__(self):
+        type(self).load_count += 1
+
+    def codes_to_features(self, codes):
+        return codes
+
+    def decode(self, features, bandwidth_id=None):
+        return features.squeeze(1)
+
+
+def test_encodec_vocos_inprocess_dispatch():  # in-process Encodec/Vocos (avoid per-sample subprocess reload)
+    """Encodec/Vocos previously ran via tools/run_encodec.py|run_vocos.py through
+    external_attacks.command_roundtrip_batch: one subprocess + full model reload per
+    audio sample. inprocess_attacks.py must instead load each model exactly once per
+    process and reuse it for every batch. This mocks the (unavailable here) encodec/vocos
+    packages to verify the caching contract, tensor-shape handling, and that
+    apply_eval_attack routes to the in-process path by default while still honoring an
+    explicit --encodec_command/--vocos_command override."""
+    inprocess_attacks._MODEL_CACHE.clear()
+    _MockEncodecModel.load_count = 0
+    _MockVocosModel.load_count = 0
+
+    original_encodec_loader = inprocess_attacks._load_encodec_model
+    original_vocos_loader = inprocess_attacks._load_vocos_model
+    inprocess_attacks._load_encodec_model = lambda device: _MockEncodecModel()
+    inprocess_attacks._load_vocos_model = lambda device: _MockVocosModel()
+    try:
+        device = torch.device("cpu")
+
+        inprocess_attacks.prewarm(device)
+        assert _MockEncodecModel.load_count == 1
+        assert _MockVocosModel.load_count == 1
+
+        wav_2d = torch.randn(3, 1600)
+        out_2d = inprocess_attacks.encodec_roundtrip_batch(wav_2d, device=device, sample_rate=24000)
+        assert out_2d.shape == wav_2d.shape
+
+        wav_3d = wav_2d.unsqueeze(1)
+        out_3d = inprocess_attacks.encodec_roundtrip_batch(wav_3d, device=device, sample_rate=24000)
+        assert out_3d.shape == wav_3d.shape
+        assert torch.allclose(out_3d.squeeze(1), out_2d)
+
+        out_vocos = inprocess_attacks.vocos_roundtrip_batch(wav_2d, device=device, sample_rate=24000)
+        assert out_vocos.shape == wav_2d.shape
+
+        # Repeated calls must hit the cache, not reload the model.
+        inprocess_attacks.encodec_roundtrip_batch(wav_2d, device=device, sample_rate=24000)
+        inprocess_attacks.vocos_roundtrip_batch(wav_2d, device=device, sample_rate=24000)
+        assert _MockEncodecModel.load_count == 1
+        assert _MockVocosModel.load_count == 1
+
+        # apply_eval_attack must default to the in-process path when no override command is set.
+        out_via_dispatch = apply_eval_attack(wav_3d, "encodec", distorter=None, seed=0, args=_FakeArgs())
+        assert out_via_dispatch.shape == wav_3d.shape
+        assert _MockEncodecModel.load_count == 1
+
+        out_via_dispatch_vocos = apply_eval_attack(wav_3d, "vocos", distorter=None, seed=0, args=_FakeArgs())
+        assert out_via_dispatch_vocos.shape == wav_3d.shape
+        assert _MockVocosModel.load_count == 1
+
+        # An explicit override command must still take the old subprocess path (backward compat).
+        original_command_roundtrip = external_attacks.command_roundtrip_batch
+        seen_commands = {}
+
+        def fake_command_roundtrip(wav, command, sample_rate=16000):
+            seen_commands["command"] = command
+            return wav
+
+        external_attacks.command_roundtrip_batch = fake_command_roundtrip
+        try:
+            override_args = _FakeArgs(
+                encodec_command="python tools/run_encodec.py --input {input} --output {output}"
+            )
+            apply_eval_attack(wav_3d, "encodec", distorter=None, seed=0, args=override_args)
+            assert seen_commands.get("command") == override_args.encodec_command
+        finally:
+            external_attacks.command_roundtrip_batch = original_command_roundtrip
+    finally:
+        inprocess_attacks._load_encodec_model = original_encodec_loader
+        inprocess_attacks._load_vocos_model = original_vocos_loader
+        inprocess_attacks._MODEL_CACHE.clear()
 
 
 def main():

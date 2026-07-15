@@ -405,6 +405,15 @@ def main():
     utility_attacks = parse_csv_list(args.utility_attacks)
     eval_attacks = parse_csv_list(args.eval_attacks)
     energy_modes = parse_csv_list(args.energy_modes)
+    # Pay the one-time Encodec/Vocos model-load cost up front, outside the timed attack
+    # loop, whenever the in-process path (no explicit --encodec_command/--vocos_command
+    # override) will actually be used.
+    if ("encodec" in eval_attacks and not args.encodec_command) or (
+        "vocos" in eval_attacks and not args.vocos_command
+    ):
+        from inprocess_attacks import prewarm
+
+        prewarm(device)
     # sqrt(top_ratio): keeping top_ratio of the bins and rescaling to this fraction of the
     # full residual norm makes the retained energy exactly top_ratio of the full energy.
     equal_energy_fraction = (

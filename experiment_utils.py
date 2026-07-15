@@ -113,10 +113,22 @@ def apply_eval_attack(wav, attack_name: str, distorter, seed: int, args):
         if not args.facodec_command:
             raise ValueError("facodec attack requested without --facodec_command")
         return command_roundtrip_batch(wav, args.facodec_command, sample_rate=16000)
+    if attack_name == "encodec":
+        command = getattr(args, "encodec_command", "")
+        if command:
+            return command_roundtrip_batch(wav, command, sample_rate=16000)
+        from inprocess_attacks import encodec_roundtrip_batch
+
+        return encodec_roundtrip_batch(wav, device=wav.device)
+    if attack_name == "vocos":
+        command = getattr(args, "vocos_command", "")
+        if command:
+            return command_roundtrip_batch(wav, command, sample_rate=16000)
+        from inprocess_attacks import vocos_roundtrip_batch
+
+        return vocos_roundtrip_batch(wav, device=wav.device)
     command_attr = {
-        "encodec": "encodec_command",
         "dac": "dac_command",
-        "vocos": "vocos_command",
         "hifigan": "hifigan_command",
     }.get(attack_name)
     if command_attr is not None:

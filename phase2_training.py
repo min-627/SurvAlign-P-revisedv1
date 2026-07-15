@@ -844,6 +844,19 @@ def main():
         print(f"[WARNING] {leak_message}. The cross-codec generalization claim (C10) is invalid for this run.")
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    # Pay the one-time Encodec/Vocos model-load cost up front, outside the timed attack
+    # loop, whenever the in-process path (no explicit --encodec_command/--vocos_command
+    # override) will actually be used anywhere in this run's attack sets.
+    all_attack_names = {
+        *args.survival_attack_names, *args.utility_attack_names, *args.train_attack_names,
+        *args.validation_attack_names, *args.test_attack_names,
+    }
+    if ("encodec" in all_attack_names and not args.encodec_command) or (
+        "vocos" in all_attack_names and not args.vocos_command
+    ):
+        from inprocess_attacks import prewarm
+
+        prewarm(device)
     alignmark = AlignMarkManager(device, latent_mode=args.latent_mode)
     distorter = DifferentiableDistortion(sr=16000, vae=alignmark.vae).to(device)
     test_dataset = UnifiedSpeechDataset(
