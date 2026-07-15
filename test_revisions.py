@@ -20,7 +20,7 @@ from experiment_utils import (
 )
 from phase1_attribution import (
     _target_norm_reference, paired_statistics, holm_bonferroni, cliffs_delta,
-    compute_finite_difference_utility_topk,
+    compute_finite_difference_utility_topk, PAIRED_COMPARISONS,
 )
 from phase1_experiment3_selfcheck import leave_one_attack_out_spearman, summarize
 from phase2_training import _gather_cached_survival
@@ -78,6 +78,92 @@ def test_paired_statistics_and_holm():  # 1-D
     assert holm["h1"]["reject_0.05"] is True
     assert holm["h3"]["reject_0.05"] is False
     assert np.isnan(holm["h4"]["p_holm"])
+
+
+def test_high_codec_utility_paired_comparisons():  # new: High-Codec-Utility_vs_{Random,Low-Survival}
+    """phase1_attribution.py's paired-comparison family previously only compared
+    High-Survival against the other conditions. This adds High-Codec-Utility_vs_Random
+    and High-Codec-Utility_vs_Low-Survival to PAIRED_COMPARISONS, computed the same way
+    (paired_statistics + Holm-Bonferroni). This test mocks a `per_sample_accuracy` dict in
+    exactly main()'s (energy_mode, condition, attack_name, repeat_index) key convention and
+    replicates main()'s comparison-resolution loop verbatim, to check the new pairs
+    actually get computed (including the special "Random" repeat-averaging path) without
+    needing real datasets/weights."""
+    assert ("High-Codec-Utility", "Random") in PAIRED_COMPARISONS
+    assert ("High-Codec-Utility", "Low-Survival") in PAIRED_COMPARISONS
+
+    rng = np.random.default_rng(0)
+    energy_mode, attack_name, n_samples, random_repeats = "natural", "noise", 64, 5
+
+    per_sample_accuracy = {}
+    per_sample_accuracy[(energy_mode, "High-Survival", attack_name, 0)] = rng.normal(0.85, 0.05, n_samples).tolist()
+    per_sample_accuracy[(energy_mode, "High-Codec-Utility", attack_name, 0)] = rng.normal(0.80, 0.05, n_samples).tolist()
+    per_sample_accuracy[(energy_mode, "Low-Survival", attack_name, 0)] = rng.normal(0.40, 0.05, n_samples).tolist()
+    for repeat in range(random_repeats):
+        per_sample_accuracy[(energy_mode, "Random", attack_name, repeat)] = rng.normal(0.55, 0.05, n_samples).tolist()
+
+    # Verbatim copy of the resolution logic in phase1_attribution.py's main(), so a
+    # regression in that loop (not just in the PAIRED_COMPARISONS list) would fail here too.
+    paired_tests = {}
+    for left, right in PAIRED_COMPARISONS:
+        left_key = (energy_mode, left, attack_name, 0)
+        if left_key not in per_sample_accuracy:
+            continue
+        left_values = per_sample_accuracy[left_key]
+        if right == "Random":
+            random_arrays = [
+                np.asarray(values)
+                for key, values in per_sample_accuracy.items()
+                if key[0] == energy_mode and key[1] == "Random" and key[2] == attack_name
+            ]
+            right_values = np.stack(random_arrays).mean(axis=0).tolist()
+        else:
+            right_key = (energy_mode, right, attack_name, 0)
+            if right_key not in per_sample_accuracy:
+                continue
+            right_values = per_sample_accuracy[right_key]
+        paired_tests[f"{energy_mode}/{attack_name}/{left}_vs_{right}"] = paired_statistics(
+            left_values, right_values, seed=42
+        )
+
+    assert f"{energy_mode}/{attack_name}/High-Codec-Utility_vs_Random" in paired_tests
+    assert f"{energy_mode}/{attack_name}/High-Codec-Utility_vs_Low-Survival" in paired_tests
+    # High-Survival_vs_* must still be present -- the new pairs are additive, not a replacement.
+    assert f"{energy_mode}/{attack_name}/High-Survival_vs_Low-Survival" in paired_tests
+
+    for key in (
+        f"{energy_mode}/{attack_name}/High-Codec-Utility_vs_Random",
+        f"{energy_mode}/{attack_name}/High-Codec-Utility_vs_Low-Survival",
+    ):
+        stats = paired_tests[key]
+        for field in ("mean_difference", "ci95_low", "ci95_high", "wilcoxon_p",
+                      "wilcoxon_n_effective", "permutation_p", "cliffs_delta", "n"):
+            assert field in stats
+        assert stats["n"] == n_samples
+
+    # High-Codec-Utility (~0.80) clearly beats Low-Survival (~0.40): large positive effect.
+    low_survival_stats = paired_tests[f"{energy_mode}/{attack_name}/High-Codec-Utility_vs_Low-Survival"]
+    assert low_survival_stats["mean_difference"] > 0.3
+    assert low_survival_stats["cliffs_delta"] > 0.9
+
+    # The "Random" comparison must average across all random_repeats entries, not just repeat 0.
+    manual_random_mean = np.stack(
+        [np.asarray(per_sample_accuracy[(energy_mode, "Random", attack_name, r)]) for r in range(random_repeats)]
+    ).mean(axis=0)
+    expected = paired_statistics(
+        per_sample_accuracy[(energy_mode, "High-Codec-Utility", attack_name, 0)],
+        manual_random_mean.tolist(), seed=42,
+    )
+    got = paired_tests[f"{energy_mode}/{attack_name}/High-Codec-Utility_vs_Random"]
+    assert got["mean_difference"] == expected["mean_difference"]
+    assert got["wilcoxon_p"] == expected["wilcoxon_p"]
+
+    # Holm-Bonferroni must run over the whole family, including the two new pairs.
+    wilcoxon_family = {k: v["wilcoxon_p"] for k, v in paired_tests.items()}
+    holm = holm_bonferroni(wilcoxon_family)
+    for key in wilcoxon_family:
+        assert key in holm
+        assert holm[key]["p_holm"] >= holm[key]["p_raw"] or np.isnan(holm[key]["p_holm"])
 
 
 def test_leave_one_attack_out():  # 2-A

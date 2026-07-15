@@ -301,6 +301,21 @@ def holm_bonferroni(pvalues: Dict[str, float]) -> Dict[str, Dict[str, float]]:
     return result
 
 
+# Pairwise per-sample-accuracy comparisons run through paired_statistics (Wilcoxon,
+# sign-flip permutation test, Cliff's delta) and jointly Holm-Bonferroni-corrected in
+# main(). "Random" is handled specially there: its per-sample accuracy is averaged over
+# args.random_repeats repeats before comparison, unlike every other left-hand condition.
+PAIRED_COMPARISONS: Tuple[Tuple[str, str], ...] = (
+    ("High-Survival", "High-Gradient-Saliency"),
+    ("High-Survival", "High-Codec-Utility"),
+    ("High-Survival", "Residual-Energy"),
+    ("High-Survival", "Random"),
+    ("High-Survival", "Low-Survival"),
+    ("High-Codec-Utility", "Random"),
+    ("High-Codec-Utility", "Low-Survival"),
+)
+
+
 def _target_norm_reference(
     raw_residuals: Dict[str, torch.Tensor],
     original: torch.Tensor,
@@ -718,13 +733,7 @@ def main():
                 }
                 summary["conditions"][f"{energy_mode}/{attack_name}/{condition}"] = averaged
 
-            comparisons = [
-                ("High-Survival", "High-Gradient-Saliency"),
-                ("High-Survival", "High-Codec-Utility"),
-                ("High-Survival", "Residual-Energy"),
-                ("High-Survival", "Random"),
-                ("High-Survival", "Low-Survival"),
-            ]
+            comparisons = PAIRED_COMPARISONS
             for left, right in comparisons:
                 left_key = (energy_mode, left, attack_name, 0)
                 if left_key not in per_sample_accuracy:
