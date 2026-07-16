@@ -420,11 +420,13 @@ def main():
     utility_attacks = parse_csv_list(args.utility_attacks)
     eval_attacks = parse_csv_list(args.eval_attacks)
     energy_modes = parse_csv_list(args.energy_modes)
-    # Pay the one-time Encodec/Vocos model-load cost up front, outside the timed attack
-    # loop, whenever the in-process path (no explicit --encodec_command/--vocos_command
-    # override) will actually be used.
+    # Pay the one-time Encodec/Vocos/FACodec model-load cost up front, outside the timed
+    # attack loop, whenever the in-process path (no explicit --encodec_command/
+    # --vocos_command/--facodec_command override) will actually be used.
     if ("encodec" in eval_attacks and not args.encodec_command) or (
         "vocos" in eval_attacks and not args.vocos_command
+    ) or (
+        "facodec" in eval_attacks and not args.facodec_command
     ):
         from inprocess_attacks import prewarm
 

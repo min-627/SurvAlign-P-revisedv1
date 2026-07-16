@@ -1,17 +1,17 @@
 # -*- coding: utf-8 -*-
-"""In-process Encodec/Vocos attack adapters.
+"""In-process Encodec/Vocos/FACodec attack adapters.
 
-`tools/run_encodec.py` / `tools/run_vocos.py`, invoked once per audio sample via
-`external_attacks.command_roundtrip_batch` (a fresh subprocess + file I/O + full model
-reload every single call), are correct but wasteful: the Encodec/Vocos weights get
+`tools/run_encodec.py` / `tools/run_vocos.py` / `tools/run_facodec.py`, invoked once per
+audio sample via `external_attacks.command_roundtrip_batch` (a fresh subprocess + file I/O
++ full model reload every single call), are correct but wasteful: the codec weights get
 reloaded from disk on every sample instead of once per process.
 
 This module keeps the same codecs but loads each model exactly once per process (cached
 in `_MODEL_CACHE`, keyed by (model name, device)) and operates directly on batched
 tensors, with no subprocess or temporary files. `encodec_roundtrip_batch`/
-`vocos_roundtrip_batch` are drop-in, batch-tensor equivalents of the old per-sample
-file-based round trip. `prewarm(device)` lets a caller pay the one-time model-load cost
-up front, outside of a timed attack loop.
+`vocos_roundtrip_batch`/`facodec_roundtrip_batch` are drop-in, batch-tensor equivalents of
+the old per-sample file-based round trip. `prewarm(device)` lets a caller pay the one-time
+model-load cost up front, outside of a timed attack loop.
 """
 
 from __future__ import annotations
@@ -44,6 +44,43 @@ def _load_vocos_model(device) -> object:
     return model
 
 
+def _load_facodec_model(device) -> Tuple[object, object]:
+    import os
+    import sys
+
+    facodec_lib_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "tools", "facodec_lib")
+    if facodec_lib_dir not in sys.path:
+        sys.path.append(facodec_lib_dir)
+    from ns3_codec import FACodecEncoder, FACodecDecoder
+    from huggingface_hub import hf_hub_download
+
+    encoder = FACodecEncoder(ngf=32, up_ratios=[2, 4, 5, 5], out_channels=256)
+    decoder = FACodecDecoder(
+        in_channels=256,
+        upsample_initial_channel=1024,
+        ngf=32,
+        up_ratios=[5, 5, 4, 2],
+        vq_num_q_c=2,
+        vq_num_q_p=1,
+        vq_num_q_r=3,
+        vq_dim=256,
+        codebook_dim=8,
+        codebook_size_prosody=10,
+        codebook_size_content=10,
+        codebook_size_residual=10,
+        use_gr_x_timbre=True,
+        use_gr_residual_f0=True,
+        use_gr_residual_phone=True,
+    )
+    encoder_ckpt = hf_hub_download(repo_id="amphion/naturalspeech3_facodec", filename="ns3_facodec_encoder.bin")
+    decoder_ckpt = hf_hub_download(repo_id="amphion/naturalspeech3_facodec", filename="ns3_facodec_decoder.bin")
+    encoder.load_state_dict(torch.load(encoder_ckpt, map_location=device))
+    decoder.load_state_dict(torch.load(decoder_ckpt, map_location=device))
+    encoder.to(device).eval()
+    decoder.to(device).eval()
+    return encoder, decoder
+
+
 def _get_model(name: str, device, loader) -> object:
     key = (name, str(device))
     model = _MODEL_CACHE.get(key)
@@ -61,16 +98,21 @@ def _get_vocos_model(device) -> object:
     return _get_model("vocos", device, _load_vocos_model)
 
 
+def _get_facodec_model(device) -> Tuple[object, object]:
+    return _get_model("facodec", device, _load_facodec_model)
+
+
 def prewarm(device) -> None:
-    """Load the Encodec and Vocos weights ahead of time.
+    """Load the Encodec, Vocos, and FACodec weights ahead of time.
 
     Calling this before the attack loop moves the (one-time) model-load latency out of
-    the timed region; without it, the first `encodec`/`vocos` attack call in a run pays
-    that cost instead. Safe to call more than once (a no-op after the first call per
-    device).
+    the timed region; without it, the first `encodec`/`vocos`/`facodec` attack call in a
+    run pays that cost instead. Safe to call more than once (a no-op after the first call
+    per device).
     """
     _get_encodec_model(device)
     _get_vocos_model(device)
+    _get_facodec_model(device)
 
 
 def _split_batch_channel(wav: torch.Tensor) -> Tuple[torch.Tensor, bool]:
@@ -150,6 +192,34 @@ def vocos_roundtrip_batch(wav: torch.Tensor, device, sample_rate: int = 16000) -
         decoded = vocos_model.decode(features, bandwidth_id=bandwidth_id)  # (B, T'')
 
     decoded_back = AF.resample(decoded, codec_sr, sample_rate) if sample_rate != codec_sr else decoded
+
+    _, decoded_aligned = align_audio_tensors(wav_2d, decoded_back.to(wav_2d.dtype))
+    return _restore_batch_channel(decoded_aligned.to(wav.device), was_3d)
+
+
+def facodec_roundtrip_batch(wav: torch.Tensor, device, sample_rate: int = 16000) -> torch.Tensor:
+    """Encode/decode `wav` through FACodec (amphion/naturalspeech3_facodec) in-process, batched.
+
+    Mirrors `tools/run_facodec.py`, which already operates natively at 16kHz (unlike
+    Encodec/Vocos's native 24kHz), but reuses the cached encoder/decoder and processes the
+    whole batch directly instead of spawning a subprocess (with a full model reload) per
+    sample.
+    """
+    encoder, decoder = _get_facodec_model(device)
+    wav_2d, was_3d = _split_batch_channel(wav)
+    wav_2d = wav_2d.to(device)
+
+    codec_sr = 16000  # FACodec's native/trained sample rate (see tools/run_facodec.py)
+    wav_resampled = AF.resample(wav_2d, sample_rate, codec_sr) if sample_rate != codec_sr else wav_2d
+    wav_in = wav_resampled.unsqueeze(1)  # (B, 1, T') channel dim expected by FACodecEncoder
+
+    with torch.no_grad():
+        enc_out = encoder(wav_in)
+        vq_post_emb, _, _, _, spk_embs = decoder(enc_out, eval_vq=False, vq=True)
+        recon_wav = decoder.inference(vq_post_emb, spk_embs)  # (B, 1, T'')
+
+    decoded_2d = recon_wav.squeeze(1)
+    decoded_back = AF.resample(decoded_2d, codec_sr, sample_rate) if sample_rate != codec_sr else decoded_2d
 
     _, decoded_aligned = align_audio_tensors(wav_2d, decoded_back.to(wav_2d.dtype))
     return _restore_batch_channel(decoded_aligned.to(wav.device), was_3d)

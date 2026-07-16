@@ -254,11 +254,10 @@ def test_phase1_phase2_share_attack_dispatch():  # refactor: dedup phase1/phase2
         pass
 
     # Missing command args must still raise for adapters with no in-process fallback
-    # (facodec/clearervoice/dac/hifigan). encodec/vocos are exempt: with no override
+    # (clearervoice/dac/hifigan). encodec/vocos/facodec are exempt: with no override
     # command they now fall back to the in-process codec path instead of raising
-    # (see test_encodec_vocos_inprocess_dispatch).
+    # (see test_encodec_vocos_inprocess_dispatch / test_facodec_inprocess_dispatch).
     for attack_name, attr in [
-        ("facodec", "facodec_command"),
         ("clearervoice", "clearervoice_command"),
         ("dac", "dac_command"),
     ]:
@@ -358,8 +357,13 @@ def test_encodec_vocos_inprocess_dispatch():  # in-process Encodec/Vocos (avoid 
 
     original_encodec_loader = inprocess_attacks._load_encodec_model
     original_vocos_loader = inprocess_attacks._load_vocos_model
+    original_facodec_loader = inprocess_attacks._load_facodec_model
     inprocess_attacks._load_encodec_model = lambda device: _MockEncodecModel()
     inprocess_attacks._load_vocos_model = lambda device: _MockVocosModel()
+    # prewarm() also loads FACodec; mock it here too so this test doesn't depend on the
+    # real (unavailable) ns3_codec/pyworld packages -- FACodec's own behavior is covered by
+    # test_facodec_inprocess_dispatch.
+    inprocess_attacks._load_facodec_model = lambda device: (_MockFACodecEncoder(), _MockFACodecDecoder())
     try:
         device = torch.device("cpu")
 
@@ -414,6 +418,117 @@ def test_encodec_vocos_inprocess_dispatch():  # in-process Encodec/Vocos (avoid 
     finally:
         inprocess_attacks._load_encodec_model = original_encodec_loader
         inprocess_attacks._load_vocos_model = original_vocos_loader
+        inprocess_attacks._load_facodec_model = original_facodec_loader
+        inprocess_attacks._MODEL_CACHE.clear()
+
+
+class _MockFACodecEncoder:
+    """Identity stand-in for `ns3_codec.FACodecEncoder`: FACodecEncoder.forward is just
+    `self.block(x)` (a plain Conv1d stack), so passing the input straight through pins the
+    shape/caching contract without needing the real (unavailable here) `ns3_codec` package
+    or downloaded checkpoints."""
+
+    load_count = 0
+
+    def __init__(self):
+        type(self).load_count += 1
+
+    def __call__(self, wav_in):
+        return wav_in
+
+
+class _MockFACodecDecoder:
+    """Stand-in for `ns3_codec.FACodecDecoder` matching its two call sites in
+    facodec_roundtrip_batch: `decoder(enc_out, eval_vq=False, vq=True)` returns a 5-tuple
+    `(outs, qs, commit_loss, quantized_buf, spk_embs)` (real signature, ns3_codec/facodec.py
+    FACodecDecoder.forward), and `decoder.inference(vq_post_emb, spk_embs)` returns the
+    reconstructed (B, 1, T) waveform."""
+
+    load_count = 0
+
+    def __init__(self):
+        type(self).load_count += 1
+
+    def __call__(self, enc_out, eval_vq=False, vq=True):
+        batch = enc_out.shape[0]
+        return enc_out, None, None, None, torch.zeros(batch, 4)
+
+    def inference(self, vq_post_emb, spk_embs):
+        return vq_post_emb
+
+
+def test_facodec_inprocess_dispatch():  # in-process FACodec (avoid per-sample subprocess reload)
+    """FACodec previously ran via tools/run_facodec.py through
+    external_attacks.command_roundtrip_batch: one subprocess + full encoder/decoder reload
+    per audio sample -- the same problem encodec/vocos had. inprocess_attacks.py must load
+    the FACodec encoder/decoder pair exactly once per process and reuse it for every batch.
+    This mocks the (unavailable here) ns3_codec package to verify the caching contract,
+    tensor-shape handling (including that FACodec needs no 16kHz<->24kHz resampling, unlike
+    Encodec/Vocos), and that apply_eval_attack routes to the in-process path by default
+    while still honoring an explicit --facodec_command override."""
+    inprocess_attacks._MODEL_CACHE.clear()
+    _MockFACodecEncoder.load_count = 0
+    _MockFACodecDecoder.load_count = 0
+
+    original_encodec_loader = inprocess_attacks._load_encodec_model
+    original_vocos_loader = inprocess_attacks._load_vocos_model
+    original_facodec_loader = inprocess_attacks._load_facodec_model
+    # prewarm() also loads Encodec/Vocos; mock those too so this test doesn't depend on the
+    # real (unavailable) encodec/vocos packages -- their own behavior is covered by
+    # test_encodec_vocos_inprocess_dispatch.
+    inprocess_attacks._load_encodec_model = lambda device: _MockEncodecModel()
+    inprocess_attacks._load_vocos_model = lambda device: _MockVocosModel()
+    inprocess_attacks._load_facodec_model = lambda device: (_MockFACodecEncoder(), _MockFACodecDecoder())
+    try:
+        device = torch.device("cpu")
+
+        inprocess_attacks.prewarm(device)
+        assert _MockFACodecEncoder.load_count == 1
+        assert _MockFACodecDecoder.load_count == 1
+
+        wav_2d = torch.randn(3, 1600)
+        out_2d = inprocess_attacks.facodec_roundtrip_batch(wav_2d, device=device, sample_rate=16000)
+        assert out_2d.shape == wav_2d.shape
+        # FACodec's native rate (16000) matches sample_rate here, so this must be a lossless
+        # passthrough for our identity mock (no resampling round-trip degradation).
+        assert torch.allclose(out_2d, wav_2d, atol=1e-5)
+
+        wav_3d = wav_2d.unsqueeze(1)
+        out_3d = inprocess_attacks.facodec_roundtrip_batch(wav_3d, device=device, sample_rate=16000)
+        assert out_3d.shape == wav_3d.shape
+        assert torch.allclose(out_3d.squeeze(1), out_2d)
+
+        # Repeated calls must hit the cache, not reload the model.
+        inprocess_attacks.facodec_roundtrip_batch(wav_2d, device=device, sample_rate=16000)
+        assert _MockFACodecEncoder.load_count == 1
+        assert _MockFACodecDecoder.load_count == 1
+
+        # apply_eval_attack must default to the in-process path when no override command is set.
+        out_via_dispatch = apply_eval_attack(wav_3d, "facodec", distorter=None, seed=0, args=_FakeArgs())
+        assert out_via_dispatch.shape == wav_3d.shape
+        assert _MockFACodecEncoder.load_count == 1
+
+        # An explicit override command must still take the old subprocess path (backward compat).
+        original_command_roundtrip = external_attacks.command_roundtrip_batch
+        seen_commands = {}
+
+        def fake_command_roundtrip(wav, command, sample_rate=16000):
+            seen_commands["command"] = command
+            return wav
+
+        external_attacks.command_roundtrip_batch = fake_command_roundtrip
+        try:
+            override_args = _FakeArgs(
+                facodec_command="python tools/run_facodec.py --input {input} --output {output}"
+            )
+            apply_eval_attack(wav_3d, "facodec", distorter=None, seed=0, args=override_args)
+            assert seen_commands.get("command") == override_args.facodec_command
+        finally:
+            external_attacks.command_roundtrip_batch = original_command_roundtrip
+    finally:
+        inprocess_attacks._load_encodec_model = original_encodec_loader
+        inprocess_attacks._load_vocos_model = original_vocos_loader
+        inprocess_attacks._load_facodec_model = original_facodec_loader
         inprocess_attacks._MODEL_CACHE.clear()
 
 

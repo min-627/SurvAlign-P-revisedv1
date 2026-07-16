@@ -110,9 +110,12 @@ def apply_eval_attack(wav, attack_name: str, distorter, seed: int, args):
             source = distorter(wav, "noise", snr_db=args.clearervoice_snr, seed=seed)
         return command_roundtrip_batch(source, args.clearervoice_command, sample_rate=16000)
     if attack_name == "facodec":
-        if not args.facodec_command:
-            raise ValueError("facodec attack requested without --facodec_command")
-        return command_roundtrip_batch(wav, args.facodec_command, sample_rate=16000)
+        command = getattr(args, "facodec_command", "")
+        if command:
+            return command_roundtrip_batch(wav, command, sample_rate=16000)
+        from inprocess_attacks import facodec_roundtrip_batch
+
+        return facodec_roundtrip_batch(wav, device=wav.device)
     if attack_name == "encodec":
         command = getattr(args, "encodec_command", "")
         if command:
