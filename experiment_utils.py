@@ -31,7 +31,7 @@ def attack_family(name: str) -> str:
         return "clean"
     if normalized in {"noise", "noise10db"}:
         return "awgn"
-    if normalized in {"lowpass", "bandpass"}:
+    if normalized in {"lowpass", "bandpass", "highpass"}:
         return "linear_filter"
     if normalized == "resample":
         return "resampling"
@@ -52,7 +52,7 @@ def overlapping_attack_families(left: Sequence[str], right: Sequence[str]) -> Li
 # (no external process / codec adapter required). Shared by phase1_attribution.py and
 # phase2_training.py so the two canonical pipelines cannot silently drift apart.
 INTERNAL_ATTACK_NAMES: Tuple[str, ...] = (
-    "clean", "identity", "noise", "noise10db", "lowpass", "bandpass", "resample",
+    "clean", "identity", "noise", "noise10db", "lowpass", "bandpass", "highpass", "resample",
     "speechtokenizer_nq6", "speechtokenizer_nq8", "strong_speechtokenizer", "spectral_proxy",
     "masking", "replacement", "frame_shuffle",
 )
@@ -70,6 +70,8 @@ def apply_internal_attack(wav, attack_name: str, distorter, seed: int):
         return distorter(wav, "lowpass", cutoff_hz=4000)
     if attack_name == "bandpass":
         return distorter(wav, "bandpass", low_hz=300, high_hz=3400)
+    if attack_name == "highpass":
+        return distorter(wav, "highpass", cutoff_hz=300)
     if attack_name == "resample":
         return distorter(wav, "resample", down_rate=2)
     if attack_name == "speechtokenizer_nq6":
@@ -98,10 +100,12 @@ def apply_eval_attack(wav, attack_name: str, distorter, seed: int, args):
     """
     if attack_name in INTERNAL_ATTACK_NAMES:
         return apply_internal_attack(wav, attack_name, distorter, seed)
-    from external_attacks import command_roundtrip_batch, ffmpeg_mp3_roundtrip_batch
+    from external_attacks import command_roundtrip_batch, ffmpeg_mp3_roundtrip_batch, ffmpeg_aac_roundtrip_batch
 
     if attack_name == "ffmpeg_mp3":
         return ffmpeg_mp3_roundtrip_batch(wav, sample_rate=16000, bitrate=args.mp3_bitrate)
+    if attack_name == "ffmpeg_aac":
+        return ffmpeg_aac_roundtrip_batch(wav, sample_rate=16000, bitrate=args.mp3_bitrate)
     if attack_name in {"clearervoice", "clearervoice_only"}:
         if not args.clearervoice_command:
             raise ValueError(f"{attack_name} requested without --clearervoice_command")

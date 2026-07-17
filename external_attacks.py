@@ -1,13 +1,26 @@
 # -*- coding: utf-8 -*-
-"""Optional held-out attack adapters (ffmpeg, ClearerVoice, FACodec, etc.)."""
+"""Optional held-out attack adapters (ffmpeg, ClearerVoice, FACodec, etc.).
+
+오사용 방지 주석 (2026-07-16, encodec/vocos 서브프로세스 방식이 24분39초까지
+늘어졌던 사고 이후): 그 근본 원인은 "서브프로세스를 쓴다"가 아니라 "신경망
+체크포인트를 호출마다 디스크에서 다시 로드한다"였다 (inprocess_attacks.py의
+_MODEL_CACHE 패턴으로 해결됨). 이 파일의 command_roundtrip_batch 기반 구현은
+모델 로딩이 필요 없는 가벼운 네이티브 도구(ffmpeg 등)에만 허용된다.
+신경망 체크포인트가 필요한 공격을 새로 추가할 때는 반드시
+inprocess_attacks.py의 `_MODEL_CACHE`/`_get_model()`/`prewarm()` 패턴을 따를 것.
+새 공격 추가 시 n=20 정도의 소규모 배치로 먼저 속도를 측정하고, 샘플당 1초를
+넘으면 병목 원인(특히 반복 모델 로딩 여부)을 먼저 확인할 것.
+"""
 
 from __future__ import annotations
 
+import multiprocessing
 import os
 import shlex
 import shutil
 import subprocess
 import tempfile
+from concurrent.futures import ThreadPoolExecutor
 
 import numpy as np
 import torch
@@ -75,33 +88,47 @@ def command_roundtrip_batch(
     return stacked.unsqueeze(1) if was_3d else stacked
 
 
-def ffmpeg_mp3_roundtrip_batch(
+def _ffmpeg_codec_roundtrip_batch(
     wav: torch.Tensor,
+    codec_name: str,
+    codec_args: list,
+    file_ext: str,
     sample_rate: int = 16000,
     bitrate: str = "64k",
+    max_workers: int = None,
 ) -> torch.Tensor:
-    """Apply a real ffmpeg MP3 encode/decode round trip."""
+    """Apply a real ffmpeg encode/decode round trip, parallelized across samples.
+
+    Each sample's ffmpeg subprocess is fully independent I/O-bound work (no shared
+    model state, unlike encodec/vocos/facodec), so thread-level parallelism is safe
+    and effective: since ffmpeg subprocesses don't hold the GIL, wall-clock speedup
+    scales roughly with CPU core count. Shared by ffmpeg_mp3_roundtrip_batch and
+    ffmpeg_aac_roundtrip_batch. Batch order is preserved explicitly via the `index`
+    carried through `_process_one`, independent of any ordering guarantee from the
+    executor itself.
+    """
     ffmpeg = shutil.which("ffmpeg")
     if ffmpeg is None:
-        raise FileNotFoundError("ffmpeg was not found on PATH; cannot run real MP3 evaluation.")
-    # ffmpeg needs separate encode and decode commands, so implement explicitly.
+        raise FileNotFoundError(f"ffmpeg was not found on PATH; cannot run real {codec_name} evaluation.")
     was_3d = wav.dim() == 3
     wav_2d = wav.squeeze(1) if was_3d else wav
-    outputs = []
-    with tempfile.TemporaryDirectory(prefix="survalign_mp3_") as temp_dir:
-        for index, sample in enumerate(wav_2d):
-            input_path = os.path.join(temp_dir, f"input_{index}.wav")
-            mp3_path = os.path.join(temp_dir, f"compressed_{index}.mp3")
-            output_path = os.path.join(temp_dir, f"output_{index}.wav")
+    workers = max_workers or min(8, multiprocessing.cpu_count())
+
+    def _process_one(item):
+        index, sample = item
+        with tempfile.TemporaryDirectory(prefix=f"survalign_{codec_name}_{index}_") as temp_dir:
+            input_path = os.path.join(temp_dir, "input.wav")
+            compressed_path = os.path.join(temp_dir, f"compressed.{file_ext}")
+            output_path = os.path.join(temp_dir, "output.wav")
             sf = _soundfile()
             sf.write(input_path, sample.detach().cpu().numpy(), sample_rate, subtype="PCM_16")
             subprocess.run(
                 [ffmpeg, "-hide_banner", "-loglevel", "error", "-y", "-i", input_path,
-                 "-codec:a", "libmp3lame", "-b:a", bitrate, mp3_path],
+                 *codec_args, "-b:a", bitrate, compressed_path],
                 check=True,
             )
             subprocess.run(
-                [ffmpeg, "-hide_banner", "-loglevel", "error", "-y", "-i", mp3_path,
+                [ffmpeg, "-hide_banner", "-loglevel", "error", "-y", "-i", compressed_path,
                  "-ar", str(sample_rate), "-ac", "1", output_path],
                 check=True,
             )
@@ -112,6 +139,38 @@ def ffmpeg_mp3_roundtrip_batch(
             _, output_t = align_audio_tensors(sample, output_t)
             if output_t.shape[-1] < sample.shape[-1]:
                 output_t = torch.nn.functional.pad(output_t, (0, sample.shape[-1] - output_t.shape[-1]))
-            outputs.append(output_t[..., : sample.shape[-1]])
-    stacked = torch.stack(outputs, dim=0)
+            return index, output_t[..., : sample.shape[-1]]
+
+    results = [None] * wav_2d.shape[0]
+    with ThreadPoolExecutor(max_workers=workers) as executor:
+        for index, output_t in executor.map(_process_one, enumerate(wav_2d)):
+            results[index] = output_t
+
+    stacked = torch.stack(results, dim=0)
     return stacked.unsqueeze(1) if was_3d else stacked
+
+
+def ffmpeg_mp3_roundtrip_batch(
+    wav: torch.Tensor,
+    sample_rate: int = 16000,
+    bitrate: str = "64k",
+    max_workers: int = None,
+) -> torch.Tensor:
+    """Apply a real ffmpeg MP3 encode/decode round trip, parallelized across samples."""
+    return _ffmpeg_codec_roundtrip_batch(
+        wav, codec_name="mp3", codec_args=["-codec:a", "libmp3lame"], file_ext="mp3",
+        sample_rate=sample_rate, bitrate=bitrate, max_workers=max_workers,
+    )
+
+
+def ffmpeg_aac_roundtrip_batch(
+    wav: torch.Tensor,
+    sample_rate: int = 16000,
+    bitrate: str = "64k",
+    max_workers: int = None,
+) -> torch.Tensor:
+    """Apply a real ffmpeg AAC encode/decode round trip, parallelized across samples."""
+    return _ffmpeg_codec_roundtrip_batch(
+        wav, codec_name="aac", codec_args=["-codec:a", "aac"], file_ext="aac",
+        sample_rate=sample_rate, bitrate=bitrate, max_workers=max_workers,
+    )

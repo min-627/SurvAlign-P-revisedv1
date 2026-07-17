@@ -488,6 +488,20 @@ class DifferentiableDistortion(nn.Module):
         filtered = F.conv1d(filtered, lp_high.view(1, 1, -1), padding=n_taps // 2)
         return filtered.squeeze(1) if was_2d else filtered
 
+    def highpass_filter(self, wav, cutoff_hz=300):
+        n_taps = 101
+        t = torch.arange(-(n_taps // 2), n_taps // 2 + 1, dtype=wav.dtype, device=wav.device)
+        fc = cutoff_hz / self.sr
+        window = torch.hann_window(n_taps, device=wav.device, dtype=wav.dtype)
+        lp = 2 * fc * torch.sinc(2 * fc * t) * window
+        lp = lp / (lp.sum() + 1e-8)
+        kernel = -lp
+        kernel[n_taps // 2] += 1.0  # spectral inversion: highpass = identity - lowpass
+        kernel = kernel.view(1, 1, -1)
+        wav_3d = wav.unsqueeze(1) if wav.dim() == 2 else wav
+        filtered = F.conv1d(wav_3d, kernel, padding=n_taps // 2)
+        return filtered.squeeze(1) if wav.dim() == 2 else filtered
+
     def resample_distortion(self, wav, down_rate=2):
         was_2d = wav.dim() == 2
         wav_3d = wav.unsqueeze(1) if was_2d else wav
@@ -631,6 +645,8 @@ class DifferentiableDistortion(nn.Module):
             return self.apply_frame_shuffle(wav, frame_duration_ms=kwargs.get("frame_duration_ms", 50), shuffle_ratio=kwargs.get("shuffle_ratio", 0.2), seed=seed)
         if dtype == "lowpass":
             return self.lowpass_filter(wav, cutoff_hz=kwargs.get("cutoff_hz", 4000))
+        if dtype == "highpass":
+            return self.highpass_filter(wav, cutoff_hz=kwargs.get("cutoff_hz", 300))
         if dtype == "bandpass":
             return self.bandpass_filter(
                 wav, low_hz=kwargs.get("low_hz", 300), high_hz=kwargs.get("high_hz", 3400)

@@ -372,6 +372,8 @@ def main():
                         help="Fraction of the full residual norm used as the equal-energy target. "
                              "Default (-1) resolves to sqrt(top_ratio), i.e. top_ratio of the full energy.")
     parser.add_argument("--survival_attacks", default="noise,lowpass,resample,speechtokenizer_nq6,spectral_proxy")
+    parser.add_argument("--survival_quantile", type=float, default=0.25,
+                        help="Percentile used to aggregate per-attack survival scores (0-1).")
     # 1-B: utility-map attacks must stay disjoint (by family) from the eval attacks used as
     # generalization evidence. strong_speechtokenizer was in BOTH defaults, so the default run
     # leaked its own held-out claim; keep only speechtokenizer_nq6 here.
@@ -483,6 +485,7 @@ def main():
             distorter,
             attack_names=survival_attacks,
             base_seed=args.seed + batch_index * 100,
+            quantile=args.survival_quantile,
         )
         gradient_saliency = compute_decoder_gradient_map(alignmark, wav_wm, msg).detach()
         with torch.enable_grad():

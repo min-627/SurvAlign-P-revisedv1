@@ -6,6 +6,8 @@ Run: python test_revisions.py   (CPU only, no weights/datasets required)
 
 from __future__ import annotations
 
+import shutil
+
 import numpy as np
 import torch
 
@@ -233,7 +235,7 @@ def test_phase1_phase2_share_attack_dispatch():  # refactor: dedup phase1/phase2
 
     # Attack name coverage must match the original hard-coded sets from both files.
     expected_internal = {
-        "clean", "identity", "noise", "noise10db", "lowpass", "bandpass", "resample",
+        "clean", "identity", "noise", "noise10db", "lowpass", "bandpass", "highpass", "resample",
         "speechtokenizer_nq6", "speechtokenizer_nq8", "strong_speechtokenizer", "spectral_proxy",
         "masking", "replacement", "frame_shuffle",
     }
@@ -530,6 +532,100 @@ def test_facodec_inprocess_dispatch():  # in-process FACodec (avoid per-sample s
         inprocess_attacks._load_vocos_model = original_vocos_loader
         inprocess_attacks._load_facodec_model = original_facodec_loader
         inprocess_attacks._MODEL_CACHE.clear()
+
+
+def test_highpass_filter():  # Part A-1: highpass_filter (paper §II-B linear_filter category)
+    dist = DifferentiableDistortion(sr=16000, vae=None)
+    torch.manual_seed(0)
+    wav = torch.randn(2, 1600) * 0.05
+    out = dist(wav, "highpass", cutoff_hz=300)
+    assert out.shape == wav.shape
+    assert torch.isfinite(out).all()
+    # A highpass filter must suppress DC / near-zero-frequency content: a constant (DC)
+    # input's output magnitude should collapse to near zero, unlike the input itself.
+    dc = torch.ones(2, 1600) * 0.5
+    dc_out = dist(dc, "highpass", cutoff_hz=300)
+    assert dc_out.abs().mean() < dc.abs().mean() * 0.05
+
+
+def test_highpass_dispatch_wiring():  # Part A-3: highpass registered in the shared dispatch tables
+    assert "highpass" in INTERNAL_ATTACK_NAMES
+    assert attack_family("highpass") == "linear_filter"
+    assert attack_family("lowpass") == attack_family("bandpass") == attack_family("highpass")
+
+    dist = DifferentiableDistortion(sr=16000, vae=None)
+    wav = torch.randn(1, 1, 1600) * 0.02
+    out_via_internal = apply_internal_attack(wav, "highpass", dist, seed=0)
+    out_via_eval = apply_eval_attack(wav, "highpass", dist, seed=0, args=_FakeArgs())
+    assert torch.equal(out_via_internal, out_via_eval)
+
+
+def test_ffmpeg_aac_dispatch_wiring():  # Part A-3: apply_eval_attack routes ffmpeg_aac correctly
+    """Verifies the wiring itself (attack name -> ffmpeg_aac_roundtrip_batch, with the right
+    sample_rate/bitrate) via a spy, independent of whether a real ffmpeg is on PATH --
+    real subprocess behavior is covered separately by
+    test_ffmpeg_aac_mp3_parallel_order_and_speed (skipped when ffmpeg is unavailable)."""
+    seen = {}
+
+    def fake_ffmpeg_aac(wav, sample_rate=16000, bitrate="64k"):
+        seen["sample_rate"] = sample_rate
+        seen["bitrate"] = bitrate
+        return wav
+
+    original = external_attacks.ffmpeg_aac_roundtrip_batch
+    external_attacks.ffmpeg_aac_roundtrip_batch = fake_ffmpeg_aac
+    try:
+        wav = torch.randn(2, 1, 1600)
+        args = _FakeArgs(mp3_bitrate="96k")
+        out = apply_eval_attack(wav, "ffmpeg_aac", distorter=None, seed=0, args=args)
+        assert seen == {"sample_rate": 16000, "bitrate": "96k"}
+        assert torch.equal(out, wav)
+    finally:
+        external_attacks.ffmpeg_aac_roundtrip_batch = original
+
+
+def test_ffmpeg_aac_mp3_parallel_order_and_speed():  # Part A-2: parallelized ffmpeg round trip
+    """Requires a real ffmpeg on PATH; skipped otherwise (this check needs local ffmpeg but
+    no GPU). Verifies (1) batch output order survives parallelization -- each sample
+    carries a distinct sine tone, checked via its dominant FFT bin after the round trip --
+    and (2) reports the actual measured parallel-vs-sequential speedup for a small batch,
+    instead of assuming the refactor is faster without checking."""
+    if shutil.which("ffmpeg") is None:
+        print("  (skipped: ffmpeg not found on PATH)")
+        return
+
+    import time
+
+    from external_attacks import ffmpeg_aac_roundtrip_batch, ffmpeg_mp3_roundtrip_batch
+
+    sample_rate = 16000
+    n_samples = int(sample_rate * 0.5)
+    t = torch.arange(n_samples, dtype=torch.float32) / sample_rate
+    freqs = [220.0, 440.0, 880.0, 1760.0]
+    wav = torch.stack([0.3 * torch.sin(2 * np.pi * f * t) for f in freqs], dim=0)
+
+    def dominant_freq(signal: torch.Tensor) -> float:
+        spec = torch.fft.rfft(signal)
+        bins = torch.fft.rfftfreq(signal.shape[-1], d=1.0 / sample_rate)
+        return float(bins[torch.argmax(spec.abs())])
+
+    out = ffmpeg_aac_roundtrip_batch(wav, sample_rate=sample_rate, bitrate="128k")
+    assert out.shape == wav.shape
+    for i, f in enumerate(freqs):
+        got = dominant_freq(out[i])
+        assert abs(got - f) < 30, f"sample {i}: expected ~{f}Hz, got {got}Hz (order scrambled?)"
+
+    # Speed: sequential (max_workers=1) vs parallel (default worker count), using the
+    # cheaper MP3 path for the timing comparison, on a slightly larger batch.
+    batch20 = wav[0:1].repeat(20, 1)
+    start = time.time()
+    ffmpeg_mp3_roundtrip_batch(batch20, sample_rate=sample_rate, max_workers=1)
+    sequential_s = time.time() - start
+    start = time.time()
+    ffmpeg_mp3_roundtrip_batch(batch20, sample_rate=sample_rate)
+    parallel_s = time.time() - start
+    print(f"  ffmpeg_mp3 n=20: sequential={sequential_s:.2f}s parallel={parallel_s:.2f}s "
+          f"(speedup={sequential_s / max(parallel_s, 1e-6):.2f}x)")
 
 
 def main():
