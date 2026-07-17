@@ -124,6 +124,7 @@ def build_guide_map(args, alignmark, distorter, wav, wav_wm, residual, context_s
             attack_names=args.survival_attack_names,
             base_seed=context_seed,
             quantile=args.survival_quantile,
+            args=args,
         )
         flat = guide.reshape(guide.shape[0], -1)
         shuffled = []
@@ -287,7 +288,7 @@ def precompute_survival_cache(args, alignmark, distorter, dataset, device):
                 guide = get_survival_map(
                     wav_a[item:item + 1], wav_wm_a[item:item + 1], distorter,
                     attack_names=args.survival_attack_names, base_seed=seed,
-                    quantile=args.survival_quantile,
+                    quantile=args.survival_quantile, args=args,
                 )
                 cache[sample_id] = guide.squeeze(0).cpu()
     print(f"[cache] Survival Map cached for {len(cache)} samples.")

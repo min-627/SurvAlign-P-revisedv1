@@ -26,7 +26,7 @@ from phase1_attribution import (
 )
 from phase1_experiment3_selfcheck import leave_one_attack_out_spearman, summarize
 from phase2_training import _gather_cached_survival
-from survalign_p import DifferentiableDistortion, stft_audio
+from survalign_p import DifferentiableDistortion, stft_audio, _apply_survival_attack_pair, paired_awgn, get_survival_map
 from smoke_test import MockAlignMark
 
 
@@ -626,6 +626,119 @@ def test_ffmpeg_aac_mp3_parallel_order_and_speed():  # Part A-2: parallelized ff
     parallel_s = time.time() - start
     print(f"  ffmpeg_mp3 n=20: sequential={sequential_s:.2f}s parallel={parallel_s:.2f}s "
           f"(speedup={sequential_s / max(parallel_s, 1e-6):.2f}x)")
+
+
+class _FakeSpeechTokenizerVAE:
+    """Deterministic, n_q-dependent stand-in for AlignMark's SpeechTokenizer VAE, matching
+    the encoder/quantizer/decoder interface `DifferentiableDistortion.speech_reconstruct`
+    calls. Not a real codec -- only used to exercise speechtokenizer_nq6/nq8/
+    strong_speechtokenizer deterministically without the real (heavy) checkpoint."""
+
+    def encoder(self, wav_3d):
+        return wav_3d
+
+    def quantizer(self, features, n_q, layers, st):
+        scale = 1.0 - 0.01 * int(n_q)
+        return features * scale, None, None, None
+
+    def decoder(self, quantized):
+        return quantized
+
+
+def test_survival_attack_pair_backward_compatible():  # emergency patch 2: whitelist -> apply_eval_attack delegation
+    """_apply_survival_attack_pair previously hard-coded its own independent 8-attack
+    whitelist, separate from apply_eval_attack (already unified elsewhere). This is the
+    function behind the already-reported H1 (correlation=0.318) and H4 (leave-one-out)
+    results, so the refactor to delegate to apply_eval_attack must reproduce the exact
+    same per-attack parameters for all 8 previously-supported attacks -- pinned here
+    against direct DifferentiableDistortion calls, not just "doesn't crash"."""
+    dist = DifferentiableDistortion(sr=16000, vae=_FakeSpeechTokenizerVAE())
+    torch.manual_seed(0)
+    clean = torch.randn(2, 3200) * 0.05
+    wm = clean + torch.randn_like(clean) * 1e-3
+    seed = 123
+
+    # noise must stay paired_awgn (shared realization between clean/watermarked), not two
+    # independent apply_eval_attack "noise" calls (which would draw independent noise).
+    got_clean, got_wm = _apply_survival_attack_pair(clean, wm, dist, "noise", seed=seed, args=None)
+    want_clean, want_wm = paired_awgn(clean, wm, snr_db=20.0, seed=seed)
+    assert torch.equal(got_clean, want_clean)
+    assert torch.equal(got_wm, want_wm)
+
+    linear_cases = [
+        ("lowpass", "lowpass", dict(cutoff_hz=4000)),
+        ("bandpass", "bandpass", dict(low_hz=300, high_hz=3400)),
+        ("resample", "resample", dict(down_rate=2)),
+        ("speechtokenizer_nq6", "reconstruct", dict(n_q=6)),
+        ("speechtokenizer_nq8", "reconstruct", dict(n_q=8)),
+        ("strong_speechtokenizer", "strong_speechtokenizer", dict(n_q=2)),
+    ]
+    for attack_name, dtype, kwargs in linear_cases:
+        got_clean, got_wm = _apply_survival_attack_pair(clean, wm, dist, attack_name, seed=seed, args=None)
+        assert torch.equal(got_clean, dist(clean, dtype, **kwargs)), attack_name
+        assert torch.equal(got_wm, dist(wm, dtype, **kwargs)), attack_name
+
+    got_clean, got_wm = _apply_survival_attack_pair(clean, wm, dist, "spectral_proxy", seed=seed, args=None)
+    assert torch.equal(got_clean, dist(clean, "spectral_proxy", cutoff_ratio=0.7, seed=seed))
+    assert torch.equal(got_wm, dist(wm, "spectral_proxy", cutoff_ratio=0.7, seed=seed))
+
+    # End-to-end: get_survival_map itself must still run for the full original default
+    # attack set and produce a finite, correctly-shaped map (catches wiring mistakes that
+    # the per-attack checks above wouldn't, e.g. a broken args passthrough).
+    original_default_attacks = (
+        "noise", "lowpass", "bandpass", "resample", "speechtokenizer_nq6", "spectral_proxy",
+    )
+    survival = get_survival_map(
+        clean.unsqueeze(1), wm.unsqueeze(1), dist, attack_names=original_default_attacks,
+        base_seed=42, quantile=0.25, args=None,
+    )
+    assert survival.shape[0] == clean.shape[0]
+    assert torch.isfinite(survival).all()
+    assert float(survival.min()) >= 0.0 and float(survival.max()) <= 1.0 + 1e-5
+
+
+def test_survival_map_supports_new_attacks():  # emergency patch 2: new attacks no longer raise
+    """replacement/masking/frame_shuffle/highpass (internal, asset-free) and
+    ffmpeg_mp3/ffmpeg_aac/encodec/vocos (external adapters, mocked here) must resolve
+    through _apply_survival_attack_pair instead of raising 'Unsupported survival-map
+    attack', which is exactly what broke before this patch."""
+    dist = DifferentiableDistortion(sr=16000, vae=None)
+    torch.manual_seed(0)
+    clean = torch.randn(2, 3200) * 0.05
+    wm = clean + torch.randn_like(clean) * 1e-3
+
+    for attack_name in ["replacement", "masking", "frame_shuffle", "highpass"]:
+        got_clean, got_wm = _apply_survival_attack_pair(clean, wm, dist, attack_name, seed=7, args=None)
+        assert got_clean.shape == clean.shape, attack_name
+        assert got_wm.shape == wm.shape, attack_name
+        assert torch.isfinite(got_clean).all() and torch.isfinite(got_wm).all(), attack_name
+
+    # External-adapter attacks: mock the same way as test_encodec_vocos_inprocess_dispatch /
+    # test_facodec_inprocess_dispatch so no real ffmpeg/encodec/vocos packages are needed.
+    original_ffmpeg_mp3 = external_attacks.ffmpeg_mp3_roundtrip_batch
+    original_ffmpeg_aac = external_attacks.ffmpeg_aac_roundtrip_batch
+    external_attacks.ffmpeg_mp3_roundtrip_batch = lambda wav, sample_rate=16000, bitrate="64k": wav
+    external_attacks.ffmpeg_aac_roundtrip_batch = lambda wav, sample_rate=16000, bitrate="64k": wav
+
+    inprocess_attacks._MODEL_CACHE.clear()
+    original_encodec_loader = inprocess_attacks._load_encodec_model
+    original_vocos_loader = inprocess_attacks._load_vocos_model
+    inprocess_attacks._load_encodec_model = lambda device: _MockEncodecModel()
+    inprocess_attacks._load_vocos_model = lambda device: _MockVocosModel()
+    try:
+        args = _FakeArgs()
+        for attack_name in ["ffmpeg_mp3", "ffmpeg_aac", "encodec", "vocos"]:
+            got_clean, got_wm = _apply_survival_attack_pair(
+                clean.unsqueeze(1), wm.unsqueeze(1), dist, attack_name, seed=7, args=args,
+            )
+            assert got_clean.shape == clean.unsqueeze(1).shape, attack_name
+            assert got_wm.shape == wm.unsqueeze(1).shape, attack_name
+    finally:
+        external_attacks.ffmpeg_mp3_roundtrip_batch = original_ffmpeg_mp3
+        external_attacks.ffmpeg_aac_roundtrip_batch = original_ffmpeg_aac
+        inprocess_attacks._load_encodec_model = original_encodec_loader
+        inprocess_attacks._load_vocos_model = original_vocos_loader
+        inprocess_attacks._MODEL_CACHE.clear()
 
 
 def main():

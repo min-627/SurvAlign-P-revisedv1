@@ -44,11 +44,13 @@ def leave_one_attack_out_spearman(
     survival_attacks: Sequence[str],
     base_seed: int = 42,
     quantile: float = 0.25,
+    args=None,
 ) -> Dict[str, List[float]]:
     """Return {held_out_attack: [per-sample Spearman, ...]}.
 
     The leave-one-out map is built from ``survival_attacks \\ {held_out}`` and correlated
-    against the single-attack survival score of ``held_out``.
+    against the single-attack survival score of ``held_out``. ``args`` is forwarded to
+    ``get_survival_map`` for any survival attack that needs external-adapter settings.
     """
     from scipy.stats import spearmanr
 
@@ -61,13 +63,13 @@ def leave_one_attack_out_spearman(
         remaining = [a for a in attacks if a != held_out]
         loo_map = get_survival_map(
             wav, wav_wm, distorter, attack_names=remaining,
-            base_seed=base_seed, quantile=quantile,
+            base_seed=base_seed, quantile=quantile, args=args,
         )
         # Ground-truth "where does the residual actually survive held_out": the single-attack
         # survival score. Use a disjoint seed so it does not alias the leave-one-out seeds.
         target_map = get_survival_map(
             wav, wav_wm, distorter, attack_names=[held_out],
-            base_seed=base_seed + 777_777, quantile=quantile,
+            base_seed=base_seed + 777_777, quantile=quantile, args=args,
         )
         support = _valid_support_mask(target_map)
         for item in range(loo_map.shape[0]):
@@ -157,6 +159,7 @@ def main():
             wav, wav_wm, distorter, survival_attacks,
             base_seed=stable_int_hash(args.seed, batch_index),
             quantile=args.survival_quantile,
+            args=args,
         )
         for attack, values in batch_results.items():
             aggregated[attack].extend(values)

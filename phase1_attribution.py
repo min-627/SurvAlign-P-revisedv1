@@ -486,6 +486,7 @@ def main():
             attack_names=survival_attacks,
             base_seed=args.seed + batch_index * 100,
             quantile=args.survival_quantile,
+            args=args,
         )
         gradient_saliency = compute_decoder_gradient_map(alignmark, wav_wm, msg).detach()
         with torch.enable_grad():

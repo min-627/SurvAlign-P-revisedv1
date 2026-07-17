@@ -765,33 +765,25 @@ def _apply_integer_shifts(wav, shifts):
     return torch.stack(aligned, dim=0)
 
 
-def _apply_survival_attack_pair(clean, watermarked, distorter, attack_name, seed):
+def _apply_survival_attack_pair(clean, watermarked, distorter, attack_name, seed, args=None):
+    """Apply the same attack to a clean/watermarked pair for survival-map scoring.
+
+    Delegates to ``experiment_utils.apply_eval_attack`` (the single dispatch table shared
+    by phase1_attribution.py/phase2_training.py) so this never drifts into its own,
+    independently-maintained attack whitelist again -- that drift is exactly what made
+    replacement/masking/frame_shuffle/highpass/ffmpeg_mp3/ffmpeg_aac/encodec/vocos raise
+    ``Unsupported survival-map attack`` here despite being valid eval/internal attacks
+    everywhere else. ``noise`` stays a special case: clean and watermarked must share the
+    *same* noise realization (``paired_awgn``), whereas calling ``apply_eval_attack``
+    separately for each side would draw independent noise.
+    """
     if attack_name == "noise":
         return paired_awgn(clean, watermarked, snr_db=20.0, seed=seed)
-    if attack_name == "lowpass":
-        return distorter(clean, "lowpass", cutoff_hz=4000), distorter(watermarked, "lowpass", cutoff_hz=4000)
-    if attack_name == "bandpass":
-        return (
-            distorter(clean, "bandpass", low_hz=300, high_hz=3400),
-            distorter(watermarked, "bandpass", low_hz=300, high_hz=3400),
-        )
-    if attack_name == "resample":
-        return distorter(clean, "resample", down_rate=2), distorter(watermarked, "resample", down_rate=2)
-    if attack_name == "speechtokenizer_nq6":
-        return distorter(clean, "reconstruct", n_q=6), distorter(watermarked, "reconstruct", n_q=6)
-    if attack_name == "speechtokenizer_nq8":
-        return distorter(clean, "reconstruct", n_q=8), distorter(watermarked, "reconstruct", n_q=8)
-    if attack_name == "strong_speechtokenizer":
-        return (
-            distorter(clean, "strong_speechtokenizer", n_q=2),
-            distorter(watermarked, "strong_speechtokenizer", n_q=2),
-        )
-    if attack_name == "spectral_proxy":
-        return (
-            distorter(clean, "spectral_proxy", cutoff_ratio=0.7, seed=seed),
-            distorter(watermarked, "spectral_proxy", cutoff_ratio=0.7, seed=seed),
-        )
-    raise ValueError(f"Unsupported survival-map attack: {attack_name}")
+    from experiment_utils import apply_eval_attack
+
+    attacked_clean = apply_eval_attack(clean, attack_name, distorter, seed, args)
+    attacked_wm = apply_eval_attack(watermarked, attack_name, distorter, seed, args)
+    return attacked_clean, attacked_wm
 
 
 def get_survival_map(
@@ -807,12 +799,18 @@ def get_survival_map(
     residual_floor_quantile=0.05,
     align_outputs=True,
     max_alignment_shift=64,
+    args=None,
 ):
     """Compute an attack-derived physical survival prior.
 
     The score combines residual retention and residual dominance. It does not use the
     watermark decoder. ``attack_names`` must be kept separate from held-out evaluation
     attacks when making generalization claims.
+
+    ``args`` is forwarded to ``experiment_utils.apply_eval_attack`` for any survival
+    attack that needs external-adapter settings (e.g. ``args.mp3_bitrate``,
+    ``args.encodec_command``); required whenever ``attack_names`` includes anything
+    beyond the differentiable-only internal attacks.
     """
     if attack_names is None:
         attack_names = ("noise", "lowpass", "bandpass", "resample", "speechtokenizer_nq6", "spectral_proxy")
@@ -836,7 +834,7 @@ def get_survival_map(
         attack_scores = []
         for attack_index, attack_name in enumerate(attack_names):
             attacked_clean, attacked_wm = _apply_survival_attack_pair(
-                clean, watermarked, distorter, attack_name, seed=int(base_seed) + attack_index
+                clean, watermarked, distorter, attack_name, seed=int(base_seed) + attack_index, args=args
             )
             attacked_clean, attacked_wm = align_audio_tensors(attacked_clean, attacked_wm)
             if align_outputs and attack_name.startswith(("reconstruct", "strong_speechtokenizer")):
