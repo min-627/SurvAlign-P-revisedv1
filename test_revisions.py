@@ -784,6 +784,39 @@ def test_train_gate_supports_default_train_attacks():  # emergency patch 5
     assert "highpass" in phase2_training.TRAIN_GATE_SUPPORTED_ATTACKS
 
 
+def test_build_guide_map_survival_branches_share_args_threading():  # emergency patch 6
+    """build_guide_map() previously called get_survival_map() independently in its
+    shuffled_survival and proposed_gate/analytic_survival branches; only the
+    shuffled_survival one passed args=args (copy-paste omission on the other), so
+    proposed_gate + map_type=survival crashed with 'AttributeError: NoneType object has
+    no attribute mp3_bitrate' the moment an external-adapter survival attack was used,
+    while shuffled_survival worked fine with the exact same attack. Both branches now go
+    through the shared _resolve_survival_map helper -- exercise an external-adapter
+    survival attack (mocked ffmpeg_mp3) through BOTH modes so neither can drift back to
+    the buggy state independently."""
+    torch.manual_seed(0)
+    wav = torch.randn(2, 1, 3200) * 0.05
+    wav_wm = wav + torch.randn_like(wav) * 1e-3
+
+    original_ffmpeg_mp3 = external_attacks.ffmpeg_mp3_roundtrip_batch
+    external_attacks.ffmpeg_mp3_roundtrip_batch = lambda wav, sample_rate=16000, bitrate="64k": wav
+    try:
+        dist = DifferentiableDistortion(sr=16000, vae=None)
+        args = _FakeArgs(survival_attack_names=["ffmpeg_mp3"], survival_quantile=0.25)
+
+        for mode, map_type in [("shuffled_survival", None), ("proposed_gate", "survival")]:
+            args.mode = mode
+            args.map_type = map_type
+            feature_pack, residual_spec, guide, masking_map = phase2_training.build_guide_map(
+                args, alignmark=None, distorter=dist, wav=wav, wav_wm=wav_wm,
+                residual=torch.zeros_like(wav), context_seed=7,
+            )
+            assert torch.isfinite(guide).all(), mode
+            assert feature_pack.shape[0] == wav.shape[0], mode
+    finally:
+        external_attacks.ffmpeg_mp3_roundtrip_batch = original_ffmpeg_mp3
+
+
 def main():
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_") and callable(v)]
     for test in tests:

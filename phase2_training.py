@@ -113,6 +113,26 @@ class SimplifiedSurvivalGate(nn.Module):
         return residual_spec * scale, scale
 
 
+def _resolve_survival_map(wav, wav_wm, distorter, args, context_seed, precomputed_survival):
+    """Single call path for "reuse the cache if we have one, else compute it" -- both
+    branches in build_guide_map() that need a survival map go through this, so a
+    get_survival_map(..., args=args) call can no longer be updated in one branch and
+    forgotten in the other (exactly what happened: the shuffled_survival branch had
+    args=args, the proposed_gate/analytic_survival branch didn't, immediate
+    AttributeError on the latter)."""
+    if precomputed_survival is not None:
+        return precomputed_survival
+    return get_survival_map(
+        wav,
+        wav_wm,
+        distorter,
+        attack_names=args.survival_attack_names,
+        base_seed=context_seed,
+        quantile=args.survival_quantile,
+        args=args,
+    )
+
+
 def build_guide_map(args, alignmark, distorter, wav, wav_wm, residual, context_seed, precomputed_survival=None):
     spec_clean = stft_audio(wav.squeeze(1), n_fft=256, hop_length=64)
     spec_wm = stft_audio(wav_wm.squeeze(1), n_fft=256, hop_length=64)
@@ -130,15 +150,7 @@ def build_guide_map(args, alignmark, distorter, wav, wav_wm, residual, context_s
     elif args.mode == "constant_gate":
         guide = torch.ones_like(clean_feature)
     elif args.mode == "shuffled_survival":
-        guide = precomputed_survival if precomputed_survival is not None else get_survival_map(
-            wav,
-            wav_wm,
-            distorter,
-            attack_names=args.survival_attack_names,
-            base_seed=context_seed,
-            quantile=args.survival_quantile,
-            args=args,
-        )
+        guide = _resolve_survival_map(wav, wav_wm, distorter, args, context_seed, precomputed_survival)
         flat = guide.reshape(guide.shape[0], -1)
         shuffled = []
         for item in range(flat.shape[0]):
@@ -149,14 +161,7 @@ def build_guide_map(args, alignmark, distorter, wav, wav_wm, residual, context_s
         guide = torch.stack(shuffled, dim=0).reshape_as(guide)
     elif args.mode in {"proposed_gate", "analytic_survival"}:
         if args.map_type == "survival":
-            guide = precomputed_survival if precomputed_survival is not None else get_survival_map(
-                wav,
-                wav_wm,
-                distorter,
-                attack_names=args.survival_attack_names,
-                base_seed=context_seed,
-                quantile=args.survival_quantile,
-            )
+            guide = _resolve_survival_map(wav, wav_wm, distorter, args, context_seed, precomputed_survival)
         elif args.map_type == "gradient_saliency":
             with torch.enable_grad():
                 guide = compute_decoder_gradient_map(alignmark, wav_wm, args.current_msg).detach()
