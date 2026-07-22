@@ -541,21 +541,47 @@ def train_gate(args, device, alignmark, distorter, dataset_train, dataset_val, s
     return gate, checkpoint_path
 
 
+_pesq_missing_warned = False
+_pesq_error_warned = False
+_stoi_missing_warned = False
+_stoi_error_warned = False
+
+
 def _safe_pesq(reference, degraded):
+    global _pesq_missing_warned, _pesq_error_warned
     if pesq is None:
+        if not _pesq_missing_warned:
+            print("[WARNING] 'pesq' package is not installed -- every method_pesq/baseline_pesq "
+                  "value will be NaN for this entire run. Install it with "
+                  "`pip install -r requirements-survalign.txt` (or `pip install pesq`).")
+            _pesq_missing_warned = True
         return float("nan")
     try:
         return float(pesq(16000, reference, degraded, "wb"))
-    except Exception:
+    except Exception as exc:
+        if not _pesq_error_warned:
+            print(f"[WARNING] pesq() raised {exc!r} on at least one sample; "
+                  "that sample's *_pesq value is NaN. Further occurrences are not logged.")
+            _pesq_error_warned = True
         return float("nan")
 
 
 def _safe_stoi(reference, degraded):
+    global _stoi_missing_warned, _stoi_error_warned
     if compute_stoi is None:
+        if not _stoi_missing_warned:
+            print("[WARNING] 'pystoi' package is not installed -- every method_stoi/baseline_stoi "
+                  "value will be NaN for this entire run. Install it with "
+                  "`pip install -r requirements-survalign.txt` (or `pip install pystoi`).")
+            _stoi_missing_warned = True
         return float("nan")
     try:
         return float(compute_stoi(reference, degraded, 16000, extended=False))
-    except Exception:
+    except Exception as exc:
+        if not _stoi_error_warned:
+            print(f"[WARNING] pystoi stoi() raised {exc!r} on at least one sample; "
+                  "that sample's *_stoi value is NaN. Further occurrences are not logged.")
+            _stoi_error_warned = True
         return float("nan")
 
 

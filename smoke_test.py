@@ -38,7 +38,32 @@ class MockAlignMark:
         return frame, logits, chunks_to_bits(logits.argmax(dim=-1), 4)
 
 
+def check_fidelity_libraries():
+    """phase2_training.py silently swaps in NaN for PESQ/STOI when these packages
+    aren't importable (so a real run degrades quietly instead of crashing). Fail
+    loudly here instead, so a missing-dependency environment is caught before an
+    expensive eval run rather than after (only discoverable then via n_failed ==
+    n_samples in the fidelity summary)."""
+    missing = []
+    try:
+        import pesq  # noqa: F401
+    except ImportError:
+        missing.append("pesq")
+    try:
+        import pystoi  # noqa: F401
+    except ImportError:
+        missing.append("pystoi")
+    if missing:
+        raise AssertionError(
+            f"Missing fidelity-metric package(s): {missing}. "
+            "Install with `pip install -r requirements-survalign.txt` -- without them, "
+            "phase2_training.py's evaluate() silently reports PESQ/STOI as all-NaN."
+        )
+
+
 def main():
+    check_fidelity_libraries()
+
     targets = torch.stack([integer_to_bits(v) for v in [101, 903, 12291, 64001]])
     metrics = compute_attribution_metrics(targets.clone(), targets)
     assert metrics["exact_message_accuracy"] == 1.0

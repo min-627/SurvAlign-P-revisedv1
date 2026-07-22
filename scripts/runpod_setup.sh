@@ -8,6 +8,11 @@ set -e
 
 echo "=== [1/5] Python 패키지 설치 ==="
 pip install scipy speechtokenizer encodec vocos pyworld librosa==0.10.1
+# requirements-survalign.txt에 있는 pesq/pystoi(fidelity 지표용)는 위 목록에서
+# 빠져 있었음 -- phase2_training.py는 이 둘이 없어도 import 실패를 삼키고
+# NaN을 리턴하도록 짜여 있어서, 누락돼도 에러 없이 조용히 PESQ/STOI만
+# 전부 NaN으로 나온다. 반드시 requirements-survalign.txt 전체를 설치할 것.
+pip install -r requirements-survalign.txt
 
 echo "=== [2/5] AlignMark 체크포인트 다운로드 ==="
 python -c "
