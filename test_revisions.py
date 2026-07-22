@@ -1110,6 +1110,70 @@ def test_random_gate_mode_provides_random_hard_mask_control_group():  # Part D
     assert not torch.equal(pack_a[:, 2], pack_b[:, 2])
 
 
+def test_big_gate_default_matches_original_architecture():  # Big Gate capacity-expansion experiment
+    """Unspecified hidden_dim/extra_layer must reproduce the exact original 3-layer,
+    hidden=16 architecture -- same layer count, same parameter count (pinned), and the
+    last conv layer still zero-initialized (training-stability guarantee kept across
+    patches 3-6)."""
+    gate = phase2_training.SimplifiedSurvivalGate()
+    assert len(gate.conv) == 7  # Conv/GroupNorm/GELU x2 + final Conv (unchanged from before)
+    param_count = sum(p.numel() for p in gate.parameters())
+    assert param_count == 3121, param_count  # pinned: hidden=16, 3-layer, in_channels=4
+    assert torch.all(gate.conv[-1].weight == 0)
+    assert torch.all(gate.conv[-1].bias == 0)
+
+
+def test_big_gate_forward_shape_and_param_count():  # Big Gate capacity-expansion experiment
+    """--gate_hidden_dim 64 --gate_extra_layer must produce a working, larger 4-layer gate
+    (more parameters than the default) with a correctly-shaped forward pass, and the
+    zero-init guarantee must still hold regardless of hidden_dim/extra_layer."""
+    default_gate = phase2_training.SimplifiedSurvivalGate()
+    big_gate = phase2_training.SimplifiedSurvivalGate(hidden_dim=64, extra_layer=True)
+    assert len(big_gate.conv) == 10  # 3 extra ops (Conv2d+GroupNorm+GELU) inserted
+    default_params = sum(p.numel() for p in default_gate.parameters())
+    big_params = sum(p.numel() for p in big_gate.parameters())
+    assert big_params > default_params
+    assert torch.all(big_gate.conv[-1].weight == 0)
+    assert torch.all(big_gate.conv[-1].bias == 0)
+
+    batch, freq, time = 2, 8, 10
+    feature_pack = torch.randn(batch, 4, freq, time)
+    residual_spec = torch.randn(batch, freq, time, dtype=torch.cfloat)
+    residual_out, scale = big_gate(feature_pack, residual_spec)
+    assert scale.shape == (batch, freq, time)
+    assert residual_out.shape == residual_spec.shape
+    assert torch.isfinite(scale).all()
+    # Zero-initialized last layer => untrained Big Gate is still an exact identity.
+    assert torch.allclose(scale, torch.ones_like(scale))
+
+
+def test_big_gate_hard_mask_combination():  # Big Gate capacity-expansion experiment
+    """hard_mask must keep working identically (guide still structurally shapes the
+    output) when combined with the wider/deeper Big Gate architecture -- the two features
+    were implemented independently (Part D vs this one) and must compose without either
+    silently no-op'ing the other."""
+    gate = phase2_training.SimplifiedSurvivalGate(hidden_dim=64, extra_layer=True, hard_mask=True)
+    with torch.no_grad():
+        gate.conv[-1].bias.fill_(1.0)  # force non-zero conv output, same reasoning as Part D's test
+    batch, freq, time = 2, 8, 10
+    clean = torch.randn(batch, freq, time)
+    residual_feat = torch.randn(batch, freq, time)
+    masking_map = torch.randn(batch, freq, time)
+    residual_spec = torch.randn(batch, freq, time, dtype=torch.cfloat)
+
+    guide_a = torch.zeros(batch, freq, time)
+    guide_a[:, : freq // 2] = 1.0
+    guide_b = 1.0 - guide_a
+
+    feature_pack_a = torch.stack([clean, residual_feat, guide_a, masking_map], dim=1)
+    feature_pack_b = torch.stack([clean, residual_feat, guide_b, masking_map], dim=1)
+
+    with torch.no_grad():
+        _, scale_a = gate(feature_pack_a, residual_spec)
+        _, scale_b = gate(feature_pack_b, residual_spec)
+    assert not torch.allclose(scale_a, scale_b), "hard_mask + Big Gate did not respond to guide content"
+
+
 def main():
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_") and callable(v)]
     for test in tests:

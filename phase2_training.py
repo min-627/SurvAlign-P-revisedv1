@@ -92,7 +92,7 @@ TRAIN_GATE_SUPPORTED_ATTACKS = frozenset({
 
 
 class SimplifiedSurvivalGate(nn.Module):
-    def __init__(self, in_channels=4, hidden_dim=16, gate_range=0.2, hard_mask=False):
+    def __init__(self, in_channels=4, hidden_dim=16, gate_range=0.2, hard_mask=False, extra_layer=False):
         super().__init__()
         if gate_range <= 0 or gate_range >= 1:
             raise ValueError("gate_range must be in (0,1)")
@@ -103,15 +103,30 @@ class SimplifiedSurvivalGate(nn.Module):
         # the guide to structurally shape the output scale map rather than merely being
         # available as one of several input channels the conv could learn to ignore.
         self.hard_mask = bool(hard_mask)
-        self.conv = nn.Sequential(
+        # Big Gate capacity-expansion experiment: hidden_dim and extra_layer default to
+        # the original (16, False) so an unspecified call reproduces the exact original
+        # 3-layer architecture (same layer count/order, same self.conv[-1] index for the
+        # zero-init below) -- fully backward compatible unless explicitly widened/deepened.
+        self.extra_layer = bool(extra_layer)
+        layers = [
             nn.Conv2d(in_channels, hidden_dim, kernel_size=3, padding=1),
             nn.GroupNorm(num_groups=4, num_channels=hidden_dim),
             nn.GELU(),
             nn.Conv2d(hidden_dim, hidden_dim, kernel_size=3, padding=1),
             nn.GroupNorm(num_groups=4, num_channels=hidden_dim),
             nn.GELU(),
-            nn.Conv2d(hidden_dim, 1, kernel_size=3, padding=1),
-        )
+        ]
+        if self.extra_layer:
+            layers += [
+                nn.Conv2d(hidden_dim, hidden_dim, kernel_size=3, padding=1),
+                nn.GroupNorm(num_groups=4, num_channels=hidden_dim),
+                nn.GELU(),
+            ]
+        layers.append(nn.Conv2d(hidden_dim, 1, kernel_size=3, padding=1))
+        self.conv = nn.Sequential(*layers)
+        # Zero-initialize the last conv layer regardless of hidden_dim/extra_layer, so any
+        # gate configuration starts as an exact identity (scale == 1.0 everywhere) --
+        # required for training stability (patches 3-6 all relied on this).
         nn.init.zeros_(self.conv[-1].weight)
         nn.init.zeros_(self.conv[-1].bias)
 
@@ -382,7 +397,16 @@ def train_gate(args, device, alignmark, distorter, dataset_train, dataset_val, s
             raise ValueError(f"Non-differentiable/unknown train attacks: {sorted(unsupported)}")
     gate = SimplifiedSurvivalGate(
         in_channels=4, gate_range=args.gate_range, hard_mask=getattr(args, "hard_mask", False),
+        hidden_dim=getattr(args, "gate_hidden_dim", 16), extra_layer=getattr(args, "gate_extra_layer", False),
     ).to(device)
+    # Big Gate capacity-expansion experiment: log the parameter count so the original
+    # (hidden=16, 3-layer) vs Big Gate (hidden=64, 4-layer) difference can be cited
+    # directly in the team report without re-deriving it from the architecture.
+    gate_param_count = sum(p.numel() for p in gate.parameters())
+    print(f"[Gate] hidden_dim={getattr(args, 'gate_hidden_dim', 16)} "
+          f"extra_layer={getattr(args, 'gate_extra_layer', False)} "
+          f"hard_mask={getattr(args, 'hard_mask', False)} "
+          f"params={gate_param_count:,}")
     optimizer = optim.AdamW(gate.parameters(), lr=args.lr, weight_decay=1e-4)
     generator = torch.Generator()
     generator.manual_seed(args.seed)
@@ -914,6 +938,16 @@ def main():
                              "random-map hard-masking control group, which isolates the "
                              "effect of the *mechanism* from the value of the Survival Map's "
                              "*information*.")
+    parser.add_argument("--gate_hidden_dim", type=int, default=16,
+                        help="Gate conv hidden channel width ('Big Gate' capacity-expansion "
+                             "experiment). Default (16) reproduces the original architecture "
+                             "exactly.")
+    parser.add_argument("--gate_extra_layer", action="store_true",
+                        help="Add one extra Conv2d(hidden->hidden)+GroupNorm+GELU layer between "
+                             "the existing two hidden conv layers and the final Conv2d(hidden->1) "
+                             "('Big Gate' capacity-expansion experiment), giving a 4-layer gate "
+                             "instead of the original 3-layer one. Off by default (original "
+                             "architecture).")
     parser.add_argument("--validation_attacks", default="bandpass,speechtokenizer_nq8")
     parser.add_argument("--test_attacks", default="clean,strong_speechtokenizer")
     parser.add_argument("--clearervoice_command", default="")
@@ -1061,6 +1095,7 @@ def main():
             validate_checkpoint_config(args, checkpoint.get("config", {}))
             gate = SimplifiedSurvivalGate(
                 in_channels=4, gate_range=args.gate_range, hard_mask=getattr(args, "hard_mask", False),
+                hidden_dim=getattr(args, "gate_hidden_dim", 16), extra_layer=getattr(args, "gate_extra_layer", False),
             ).to(device)
             state = checkpoint.get("model_state_dict", checkpoint)
             gate.load_state_dict(state, strict=True)
