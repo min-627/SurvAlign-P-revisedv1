@@ -20,14 +20,6 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 from matplotlib.colors import ListedColormap
-
-# 한글 라벨(원본/잔차/Survival Map 등)이 폰트 미지원으로 네모(tofu)로 깨지는 것을 방지.
-# 설치 폰트가 없는 환경(RunPod 등)에서는 조용히 기본 폰트로 대체된다.
-for _font_name in ("Malgun Gothic", "NanumGothic", "AppleGothic"):
-    if _font_name in {f.name for f in matplotlib.font_manager.fontManager.ttflist}:
-        matplotlib.rcParams["font.family"] = _font_name
-        break
-matplotlib.rcParams["axes.unicode_minus"] = False
 import numpy as np
 import torch
 from types import SimpleNamespace
@@ -69,7 +61,7 @@ def make_overlap_panel(ax, residual_arr: np.ndarray, survival_arr: np.ndarray, t
     ax.imshow(code, aspect="auto", origin="lower", cmap=cmap, vmin=0, vmax=3)
     union = int((residual_top | survival_top).sum())
     overlap_ratio = float((code == 3).sum()) / max(1, union)
-    ax.set_title(f"Top {int(top_fraction * 100)}% overlap (겹침 {overlap_ratio:.1%})")
+    ax.set_title(f"Top {int(top_fraction * 100)}% overlap ({overlap_ratio:.1%})")
     return overlap_ratio
 
 
@@ -115,20 +107,20 @@ def visualize_one(args, alignmark, distorter, wav, msg, metadata, device, out_di
     fig, axes = plt.subplots(2, 3, figsize=(16, 9))
 
     im0 = axes[0, 0].imshow(clean_channel, aspect="auto", origin="lower", cmap="magma")
-    axes[0, 0].set_title("원본 오디오 스펙트로그램 (채널 1)")
+    axes[0, 0].set_title("Original Spectrogram (Channel 1)")
     fig.colorbar(im0, ax=axes[0, 0], fraction=0.046)
 
     im1 = axes[0, 1].imshow(residual_channel, aspect="auto", origin="lower", cmap="magma")
-    axes[0, 1].set_title("워터마크 잔차 (채널 2)")
+    axes[0, 1].set_title("Watermark Residual (Channel 2)")
     fig.colorbar(im1, ax=axes[0, 1], fraction=0.046)
 
     im2 = axes[0, 2].imshow(survival_channel, aspect="auto", origin="lower", cmap="magma", vmin=0.0, vmax=1.0)
-    axes[0, 2].set_title("Survival Map (채널 3)")
+    axes[0, 2].set_title("Survival Map (Channel 3)")
     fig.colorbar(im2, ax=axes[0, 2], fraction=0.046)
 
     axes[1, 0].imshow(residual_db, aspect="auto", origin="lower", cmap="gray")
     axes[1, 0].imshow(survival_channel, aspect="auto", origin="lower", cmap="magma", alpha=0.5, vmin=0.0, vmax=1.0)
-    axes[1, 0].set_title("잔차(회색) 위에 Survival Map(magma) 오버레이")
+    axes[1, 0].set_title("Survival Map (magma) overlaid on Residual (gray)")
 
     overlap_ratio = make_overlap_panel(axes[1, 1], residual_channel, survival_channel, args.top_fraction)
 
@@ -139,9 +131,9 @@ def visualize_one(args, alignmark, distorter, wav, msg, metadata, device, out_di
         residual_channel.reshape(-1)[idx], survival_channel.reshape(-1)[idx],
         s=4, alpha=0.3, color="tab:purple",
     )
-    axes[1, 2].set_xlabel("잔차 채널 값 (채널 2)")
-    axes[1, 2].set_ylabel("Survival Map 값 (채널 3)")
-    axes[1, 2].set_title(f"픽셀 단위 상관관계\nPearson={pearson:.3f}, Spearman={spearman:.3f}")
+    axes[1, 2].set_xlabel("Residual channel value (Channel 2)")
+    axes[1, 2].set_ylabel("Survival Map value (Channel 3)")
+    axes[1, 2].set_title(f"Pixel-wise correlation\nPearson={pearson:.3f}, Spearman={spearman:.3f}")
 
     fig.suptitle(f"sample={sample_id}  speaker={metadata['speaker_id']}")
     fig.tight_layout()
