@@ -34,11 +34,12 @@ from survalign_p import (
     stft_audio,
 )
 
-for _font_name in ("Malgun Gothic", "NanumGothic", "AppleGothic"):
-    if _font_name in {f.name for f in matplotlib.font_manager.fontManager.ttflist}:
-        matplotlib.rcParams["font.family"] = _font_name
-        break
-matplotlib.rcParams["axes.unicode_minus"] = False
+# Neural/quantized codecs whose encode step can flip a discrete codebook entry from a tiny
+# input perturbation, making (attacked_wm - attacked_clean) larger than the original
+# residual itself (retained_energy_ratio > 1.0). survalign_p.get_survival_map() already
+# anticipates this and clamps the equivalent per-pixel ratio to [0, 1]; see the note
+# printed at the end of main() for detail. Not a bug in retained_energy_ratio().
+NEURAL_CODEC_ATTACKS = frozenset({"encodec", "vocos", "facodec"})
 
 ATTACKS = (
     "replacement", "masking", "frame_shuffle",
@@ -59,7 +60,7 @@ def to_db(magnitude: np.ndarray, eps: float = 1e-8) -> np.ndarray:
 
 
 def main():
-    parser = argparse.ArgumentParser(description="공격별 스펙트로그램 변화 비교")
+    parser = argparse.ArgumentParser(description="Per-attack spectrogram comparison")
     parser.add_argument("--dataset_type", default="librispeech", choices=["librispeech", "vctk", "ljspeech", "combined"])
     parser.add_argument("--dataset_name", default="dev-clean")
     parser.add_argument("--combined_protocol", default="speaker_disjoint", choices=["speaker_disjoint", "paper"])
@@ -67,7 +68,7 @@ def main():
     parser.add_argument("--split", default="test", choices=["train", "calib", "test"])
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--sample_index", type=int, default=30,
-                        help="visualize_channels.py의 sample_0(speaker=2035)과 같은 데이터셋 인덱스가 기본값.")
+                        help="Dataset index; default matches visualize_channels.py's sample_0 (speaker=2035).")
     parser.add_argument("--attacks", default=",".join(ATTACKS))
     parser.add_argument("--mp3_bitrate", default="64k")
     parser.add_argument("--encodec_command", default="")
@@ -124,11 +125,12 @@ def main():
     clean_db = to_db(np.abs(stft_audio(wav.squeeze(1), n_fft=N_FFT, hop_length=HOP_LENGTH)[0].cpu().numpy()))
     vmin, vmax = float(np.percentile(clean_db, 1)), float(np.percentile(clean_db, 99))
 
-    panels = [("원본 (공격 전)", clean_db, None)]
+    panels = [("Original (pre-attack)", clean_db, None)]
     wm_db = to_db(np.abs(stft_audio(wav_wm.squeeze(1), n_fft=N_FFT, hop_length=HOP_LENGTH)[0].cpu().numpy()))
-    panels.append(("워터마크됨 (공격 없음)", wm_db, None))
+    panels.append(("Watermarked (no attack)", wm_db, None))
 
     energy_ratios = {}
+    raw_energy_ratios = {}
     errors = {}
     for attack_name in attack_names:
         seed = stable_int_hash(args.seed, "per_attack", metadata["sample_id"], attack_name)
@@ -140,14 +142,22 @@ def main():
             retained_residual, orig_residual = align_audio_tensors(
                 attacked_wm - attacked_clean, residual
             )
-            ratio = float(retained_energy_ratio(retained_residual, orig_residual).item())
+            raw_ratio = float(retained_energy_ratio(retained_residual, orig_residual).item())
+            # Match get_survival_map()'s own clamp(retention, 0.0, 1.0): for neural/quantized
+            # codecs the raw ratio can exceed 1.0 (see NEURAL_CODEC_ATTACKS note above), which
+            # would otherwise make the plotted "retained fraction" axis misleading.
+            ratio = min(raw_ratio, 1.0)
+            raw_energy_ratios[attack_name] = raw_ratio
             energy_ratios[attack_name] = ratio
 
             spec_db = to_db(np.abs(
                 stft_audio(attacked_wm.squeeze(1), n_fft=N_FFT, hop_length=HOP_LENGTH)[0].detach().cpu().numpy()
             ))
             panels.append((attack_name, spec_db, None))
-            print(f"[OK] {attack_name}: retained_energy_ratio={ratio:.3f}")
+            if raw_ratio > 1.0:
+                print(f"[OK] {attack_name}: retained_energy_ratio={ratio:.3f} (raw={raw_ratio:.3f}, capped at 1.0)")
+            else:
+                print(f"[OK] {attack_name}: retained_energy_ratio={ratio:.3f}")
         except Exception as exc:  # noqa: BLE001 -- per-attack failures must not abort the other 10
             errors[attack_name] = str(exc)
             panels.append((attack_name, None, str(exc)))
@@ -176,7 +186,7 @@ def main():
         ax.set_title(subtitle, fontsize=9)
     fig.suptitle(f"sample={metadata['sample_id']}  speaker={metadata['speaker_id']}", fontsize=13)
     fig.tight_layout(rect=[0, 0, 0.9, 0.96], h_pad=2.5)
-    fig.colorbar(im, ax=axes, fraction=0.02, pad=0.02, label="dB (원본 스펙트로그램 1~99 백분위수 기준 공통 스케일)")
+    fig.colorbar(im, ax=axes, fraction=0.02, pad=0.02, label="dB (common scale: 1st-99th percentile of the original spectrogram)")
 
     speaker_tag = sanitize(metadata["speaker_id"])
     grid_path = f"{args.output_dir}/sample_{args.sample_index}_{speaker_tag}_grid.png"
@@ -188,10 +198,19 @@ def main():
     ordered_attacks = [a for a in attack_names if a in energy_ratios]
     values = [energy_ratios[a] for a in ordered_attacks]
     colors = ["tab:red" if a in filter_attacks else "tab:blue" for a in ordered_attacks]
-    ax2.bar(ordered_attacks, values, color=colors)
-    ax2.set_ylabel("공격 후 남은 워터마크 잔차 에너지 비율 (0~1)")
-    ax2.set_title(f"공격별 잔차 에너지 잔존 비율  sample={metadata['sample_id']} speaker={metadata['speaker_id']}\n"
-                  f"(빨강 = 필터형 lowpass/bandpass/highpass)")
+    hatches = ["//" if raw_energy_ratios[a] > 1.0 else None for a in ordered_attacks]
+    bars = ax2.bar(ordered_attacks, values, color=colors)
+    for bar, hatch, attack_name in zip(bars, hatches, ordered_attacks):
+        if hatch:
+            bar.set_hatch(hatch)
+            bar.set_edgecolor("black")
+            ax2.text(bar.get_x() + bar.get_width() / 2, 1.02, f"raw={raw_energy_ratios[attack_name]:.1f}",
+                      ha="center", va="bottom", fontsize=8)
+    ax2.axhline(1.0, color="gray", linewidth=0.8, linestyle=":")
+    ax2.set_ylim(0, 1.15)
+    ax2.set_ylabel("Retained watermark-residual energy ratio after attack (0-1, capped)")
+    ax2.set_title(f"Retained residual energy per attack  sample={metadata['sample_id']} speaker={metadata['speaker_id']}\n"
+                  f"(red = filter attacks lowpass/bandpass/highpass; hatched = raw ratio > 1.0, capped at 1.0)")
     ax2.tick_params(axis="x", rotation=45)
     for label in ax2.get_xticklabels():
         label.set_ha("right")
@@ -206,6 +225,25 @@ def main():
         print(f"\n[SUMMARY] {len(errors)}/{len(attack_names)} attacks failed: {sorted(errors)}")
     else:
         print(f"\n[SUMMARY] all {len(attack_names)} attacks succeeded.")
+
+    capped_attacks = {a: r for a, r in raw_energy_ratios.items() if r > 1.0}
+    if capped_attacks:
+        print("\n[NOTE] raw retained_energy_ratio > 1.0 for: "
+              + ", ".join(f"{a}={r:.2f}" for a, r in capped_attacks.items()))
+        print(
+            "This is expected for learned/quantized codecs (encodec/vocos/facodec), not a bug in\n"
+            "retained_energy_ratio(). Their encoder maps the waveform to *discrete* codebook\n"
+            "indices; a tiny input perturbation (the watermark residual, usually much quieter\n"
+            "than speech) can push a handful of frames across a codebook decision boundary and\n"
+            "flip which entry gets selected. The decoder then reconstructs a completely different\n"
+            "value at those frames -- a difference far larger than the input perturbation that\n"
+            "caused it, because quantization is not smooth/Lipschitz-continuous at those\n"
+            "boundaries. survalign_p.get_survival_map() already anticipates exactly this and\n"
+            "clamps the equivalent per-pixel ratio to [0, 1] before using it as a survival score\n"
+            "(see `retention = torch.clamp(retained_residual / residual_mag_safe, 0.0, 1.0)`).\n"
+            "This script does the same (caps the plotted/reported ratio at 1.0) while still\n"
+            "printing the raw, uncapped value above for transparency."
+        )
 
 
 if __name__ == "__main__":
